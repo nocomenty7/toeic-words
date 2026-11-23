@@ -1,0 +1,10 @@
+{
+  "name": "TOEIC 100% 단어 암기",
+  "short_name": "토익암기",
+  "description": "과학적 반복 학습과 네이티브 발음으로 단기간에 100% 암기하는 모바일 토익 단어장",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#4f46e5",
+  "orientation": "portrait"
+}
