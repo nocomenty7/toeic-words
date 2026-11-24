@@ -13,8 +13,13 @@ window.Storage = (function () {
     autoSpeak: true,
     showTips: true,
     theme: 'system', // 'system' | 'light' | 'dark'
-    chunkSize: 8     // 집중 암기 1회당 단어 수 (밀러의 법칙 7±2)
+    chunkSize: 8,    // 집중 암기 1회당 단어 수 (밀러의 법칙 7±2)
+    geminiApiKey: '' // (선택) Vercel 환경변수 대신 직접 입력할 때 사용
   };
+
+  function getDefaultPart5() {
+    return JSON.parse(JSON.stringify(window.DEFAULT_PART5 || []));
+  }
 
   function createEmptyProgress() {
     return {
@@ -32,6 +37,7 @@ window.Storage = (function () {
       activeDeckId: window.DEFAULT_DECK.id,
       decks: [JSON.parse(JSON.stringify(window.DEFAULT_DECK))],
       progress: {}, // { [deckId]: { [wordId]: Progress } }
+      part5: getDefaultPart5(),
       settings: { ...DEFAULT_SETTINGS },
       stats: {
         totalReviews: 0,
@@ -64,6 +70,9 @@ window.Storage = (function () {
       // 설정 기본값 병합
       parsed.settings = { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) };
       parsed.progress = parsed.progress || {};
+      if (!Array.isArray(parsed.part5)) {
+        parsed.part5 = getDefaultPart5();
+      }
       parsed.stats = parsed.stats || {
         totalReviews: 0,
         sessionsCompleted: 0,
@@ -286,6 +295,74 @@ window.Storage = (function () {
     return { total, mastered, learning, unseen, wrongWords, starred, percent };
   }
 
+  function addPart5Items(state, items) {
+    if (!Array.isArray(state.part5)) state.part5 = [];
+    let added = 0;
+    items.forEach((raw, idx) => {
+      if (!raw || !raw.question || !raw.choices) return;
+      const item = {
+        id: `p5_${Date.now()}_${idx}`,
+        testName: String(raw.testName || 'Part 5 오답').trim(),
+        number: String(raw.number || '').trim(),
+        category: String(raw.category || '어휘/문법').trim(),
+        question: String(raw.question).trim(),
+        choices: {
+          A: String(raw.choices.A || '').trim(),
+          B: String(raw.choices.B || '').trim(),
+          C: String(raw.choices.C || '').trim(),
+          D: String(raw.choices.D || '').trim()
+        },
+        answer: String(raw.answer || 'A').trim().toUpperCase().replace(/[^ABCD]/g, '') || 'A',
+        translation: String(raw.translation || '').trim(),
+        keyPoint: String(raw.keyPoint || '').trim(),
+        explanation: String(raw.explanation || '').trim(),
+        choiceNotes: {
+          A: String(raw.choiceNotes?.A || '').trim(),
+          B: String(raw.choiceNotes?.B || '').trim(),
+          C: String(raw.choiceNotes?.C || '').trim(),
+          D: String(raw.choiceNotes?.D || '').trim()
+        },
+        status: 'wrong',
+        attempts: 0,
+        correctCount: 0,
+        createdAt: Date.now()
+      };
+      state.part5.unshift(item);
+      added += 1;
+    });
+    save(state);
+    return added;
+  }
+
+  function recordPart5Attempt(state, itemId, isCorrect) {
+    const item = (state.part5 || []).find((q) => q.id === itemId);
+    if (!item) return null;
+    item.attempts = (item.attempts || 0) + 1;
+    if (isCorrect) {
+      item.correctCount = (item.correctCount || 0) + 1;
+      item.status = item.status === 'review' || item.correctCount >= 2 ? 'mastered' : 'review';
+    } else {
+      item.status = 'wrong';
+    }
+    save(state);
+    return item;
+  }
+
+  function cyclePart5Status(state, itemId) {
+    const item = (state.part5 || []).find((q) => q.id === itemId);
+    if (!item) return null;
+    const order = ['wrong', 'review', 'mastered'];
+    const idx = order.indexOf(item.status || 'wrong');
+    item.status = order[(idx + 1) % order.length];
+    save(state);
+    return item.status;
+  }
+
+  function deletePart5Item(state, itemId) {
+    state.part5 = (state.part5 || []).filter((q) => q.id !== itemId);
+    save(state);
+  }
+
   return {
     load,
     save,
@@ -299,6 +376,10 @@ window.Storage = (function () {
     appendWordsToDeck,
     deleteDeck,
     deleteWordFromDeck,
-    getDeckStats
+    getDeckStats,
+    addPart5Items,
+    recordPart5Attempt,
+    cyclePart5Status,
+    deletePart5Item
   };
 })();

@@ -5,7 +5,8 @@
   'use strict';
 
   const state = window.Storage.load();
-  let currentTab = 'learn';
+  let currentSection = 'vocab'; // 'vocab' | 'part5'
+  let currentTab = 'learn';     // vocab: learn|flashcard|audio|list | part5: p5_quiz|p5_list|p5_add
 
   // 세션 상태 (집중 암기)
   let session = null;
@@ -45,7 +46,9 @@
 
   // DOM 참조
   const mainEl = document.getElementById('mainContent');
+  const bottomNavEl = document.getElementById('bottomNav');
   const activeDeckNameEl = document.getElementById('activeDeckName');
+  const btnDeckPicker = document.getElementById('btnDeckPicker');
   const btnQuickAccent = document.getElementById('btnQuickAccent');
   const toastEl = document.getElementById('toast');
   const deckDialog = document.getElementById('deckDialog');
@@ -88,7 +91,6 @@
   }
 
   function speakWord(text, slow = false, onEnd) {
-    window.TTS.unlock();
     const baseRate = state.settings.rate || 0.95;
     window.TTS.speak(text, {
       lang: state.settings.accent || 'en-US',
@@ -108,8 +110,60 @@
 
   function updateHeader() {
     const deck = getActiveDeck();
-    activeDeckNameEl.textContent = deck.name;
+    if (currentSection === 'part5') {
+      const p5Count = (state.part5 || []).length;
+      activeDeckNameEl.textContent = `Part 5 오답노트 (${p5Count})`;
+      btnDeckPicker.style.opacity = '0.9';
+    } else {
+      activeDeckNameEl.textContent = deck.name;
+      btnDeckPicker.style.opacity = '1';
+    }
     btnQuickAccent.textContent = state.settings.accent === 'en-GB' ? '🇬🇧 UK' : '🇺🇸 US';
+
+    document.querySelectorAll('.sec-tab').forEach((btn) => {
+      const active = btn.dataset.section === currentSection;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', String(active));
+    });
+  }
+
+  function renderBottomNav() {
+    const tabs = currentSection === 'part5'
+      ? [
+          { id: 'p5_quiz', icon: '📝', label: '오답풀기' },
+          { id: 'p5_list', icon: '📋', label: '오답목록' },
+          { id: 'p5_add', icon: '📸', label: '사진등록' }
+        ]
+      : [
+          { id: 'learn', icon: '⚡', label: '집중암기' },
+          { id: 'flashcard', icon: '🃏', label: '플래시카드' },
+          { id: 'audio', icon: '🎧', label: '귀로암기' },
+          { id: 'list', icon: '📋', label: '단어장' }
+        ];
+
+    bottomNavEl.classList.toggle('cols-3', tabs.length === 3);
+    bottomNavEl.innerHTML = tabs.map((t) => `
+      <button class="nav-item ${currentTab === t.id ? 'active' : ''}" data-tab="${t.id}" type="button">
+        <span class="nav-icon">${t.icon}</span>
+        <span class="nav-label">${t.label}</span>
+      </button>
+    `).join('');
+
+    bottomNavEl.querySelectorAll('.nav-item').forEach((btn) => {
+      btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    });
+  }
+
+  function switchSection(section) {
+    if (currentSection === section) return;
+    stopAudioAutoplay();
+    window.TTS.stop();
+    session = null;
+    currentSection = section;
+    currentTab = section === 'part5' ? 'p5_quiz' : 'learn';
+    renderBottomNav();
+    render();
+    mainEl.scrollTop = 0;
   }
 
   function filterDeckWords(deck, filter) {
@@ -144,16 +198,21 @@
       session = null;
     }
 
-    document.querySelectorAll('.nav-item').forEach((btn) => {
-      btn.classList.toggle('active', btn.dataset.tab === tab);
-    });
-
+    renderBottomNav();
     render();
     mainEl.scrollTop = 0;
   }
 
   function render() {
     updateHeader();
+    if (currentSection === 'part5') {
+      const p5Ctx = { state, mainEl, showToast, speakWord, switchTab };
+      if (currentTab === 'p5_list') window.Part5Module.renderList(p5Ctx);
+      else if (currentTab === 'p5_add') window.Part5Module.renderAdd(p5Ctx);
+      else window.Part5Module.renderQuiz(p5Ctx);
+      return;
+    }
+
     if (currentTab === 'learn') {
       if (session) renderSession();
       else renderHome();
@@ -537,14 +596,13 @@
           <div class="hint-letters">${escapeHtml(makeHintPattern(w.word))}</div>
 
           ${!session.recallChecked ? `
-            <input id="recallInput" class="recall-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="영단어 입력 (또는 바로 정답 확인)" value="${escapeHtml(session.recallTyped)}" />
-            <div class="btn-row mt-12">
-              <button class="btn btn-secondary" id="btnRecallPeek" type="button">👀 정답 보기</button>
-              <button class="btn btn-primary" id="btnRecallSubmit" type="button">확인</button>
+            <div style="font-size: 13px; color: var(--text-sub); margin: 6px 0 14px;">
+              영단어와 발음을 머릿속으로 떠올린 뒤 확인해 보세요
             </div>
+            <button class="btn btn-primary full-width" id="btnRecallPeek" type="button">👀 정답 & 발음 확인하기</button>
           ` : `
             <div class="reveal-box">
-              <div class="prompt-word" style="color: ${session.recallCorrect ? 'var(--success)' : 'var(--primary)'};">${escapeHtml(w.word)}</div>
+              <div class="prompt-word" style="color: var(--primary);">${escapeHtml(w.word)}</div>
               ${w.phonetic ? `<div class="prompt-phonetic">${escapeHtml(w.phonetic)}</div>` : ''}
               <div class="audio-controls">
                 <button class="speak-btn" id="btnSpeakNormal" type="button">🔊 발음 듣기</button>
@@ -555,14 +613,12 @@
           `}
         </div>
 
-        ${session.recallChecked ? (
-          session.recallCorrect
-            ? `<button class="btn btn-success full-width mt-16" id="btnNextTask" type="button">정확해요! 다음으로 →</button>`
-            : `<div class="btn-row mt-16">
-                 <button class="btn btn-danger-outline" id="btnRecallWrong" type="button">😅 못 떠올렸어요</button>
-                 <button class="btn btn-success" id="btnRecallRight" type="button">👌 떠올렸어요!</button>
-               </div>`
-        ) : ''}
+        ${session.recallChecked ? `
+          <div class="btn-row mt-16">
+            <button class="btn btn-danger-outline" id="btnRecallWrong" type="button">😅 못 떠올렸어요</button>
+            <button class="btn btn-success" id="btnRecallRight" type="button">👌 떠올렸어요!</button>
+          </div>
+        ` : ''}
       `;
     }
 
@@ -681,45 +737,11 @@
       });
     });
 
-    // Recall 이벤트
-    const recallInput = document.getElementById('recallInput');
-    const recallSubmit = document.getElementById('btnRecallSubmit');
+    // Recall 이벤트 (원터치 회상 확인 - 영타 입력 제거)
     const recallPeek = document.getElementById('btnRecallPeek');
-
-    const handleRecallSubmit = () => {
-      const typed = (recallInput ? recallInput.value : '').trim();
-      session.recallTyped = typed;
-      if (!typed) {
-        session.recallChecked = true;
-        session.recallCorrect = false;
-        speakWord(w.word);
-        renderSession();
-        return;
-      }
-      const isExact = typed.toLowerCase() === w.word.toLowerCase();
-      session.recallChecked = true;
-      session.recallCorrect = isExact;
-      speakWord(w.word);
-      if (isExact) {
-        session.correctCount += 1;
-        window.Storage.recordResult(state, deck.id, w.id, true);
-      }
-      renderSession();
-    };
-
-    if (recallSubmit) recallSubmit.addEventListener('click', handleRecallSubmit);
-    if (recallInput) {
-      recallInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          handleRecallSubmit();
-        }
-      });
-    }
     if (recallPeek) {
       recallPeek.addEventListener('click', () => {
         session.recallChecked = true;
-        session.recallCorrect = false;
         speakWord(w.word);
         renderSession();
       });
@@ -1531,6 +1553,8 @@
     document.getElementById('activeVoiceName').textContent = window.TTS.getActiveVoiceLabel(state.settings.accent);
     document.getElementById('toggleAutoSpeak').checked = Boolean(state.settings.autoSpeak);
     document.getElementById('toggleShowTips').checked = Boolean(state.settings.showTips);
+    const keyInput = document.getElementById('inputGeminiKey');
+    if (keyInput) keyInput.value = state.settings.geminiApiKey || '';
 
     const setSeg = (id, val) => {
       document.querySelectorAll(`#${id} button`).forEach((b) => {
@@ -1547,13 +1571,19 @@
      초기 이벤트 바인딩
      ========================================================= */
   function initEvents() {
-    // 하단 네비게이션
-    document.querySelectorAll('.nav-item').forEach((btn) => {
-      btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    // 큰 틀 2개 전환 (단어암기 / Part 5 오답노트)
+    document.querySelectorAll('.sec-tab').forEach((btn) => {
+      btn.addEventListener('click', () => switchSection(btn.dataset.section));
     });
 
     // 상단 바
-    document.getElementById('btnDeckPicker').addEventListener('click', openDeckDialog);
+    btnDeckPicker.addEventListener('click', () => {
+      if (currentSection === 'part5') {
+        switchTab('p5_list');
+      } else {
+        openDeckDialog();
+      }
+    });
     document.getElementById('btnOpenSettings').addEventListener('click', openSettingsDialog);
     btnQuickAccent.addEventListener('click', () => {
       state.settings.accent = state.settings.accent === 'en-US' ? 'en-GB' : 'en-US';
@@ -1706,6 +1736,14 @@
       window.Storage.save(state);
     });
 
+    const keyInput = document.getElementById('inputGeminiKey');
+    if (keyInput) {
+      keyInput.addEventListener('input', (e) => {
+        state.settings.geminiApiKey = e.target.value.trim();
+        window.Storage.save(state);
+      });
+    }
+
     document.getElementById('btnTestVoice').addEventListener('click', () => {
       speakWord('unanimously');
     });
@@ -1714,5 +1752,6 @@
   // 앱 초기화
   applyTheme();
   initEvents();
+  renderBottomNav();
   render();
 })();

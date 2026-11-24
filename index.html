@@ -34,28 +34,21 @@
       </div>
     </header>
 
+    <!-- 큰 틀 2개 전환 바: 단어암기 / Part 5 오답노트 -->
+    <div class="section-switcher" role="tablist" aria-label="학습 영역 선택">
+      <button id="secVocab" class="sec-tab active" data-section="vocab" type="button" role="tab" aria-selected="true">
+        📚 단어암기
+      </button>
+      <button id="secPart5" class="sec-tab" data-section="part5" type="button" role="tab" aria-selected="false">
+        📝 Part 5 오답노트
+      </button>
+    </div>
+
     <!-- 메인 컨텐츠 영역 -->
     <main id="mainContent" class="main-content" role="main"></main>
 
-    <!-- 하단 네비게이션 -->
-    <nav class="bottom-nav" aria-label="주요 학습 메뉴">
-      <button class="nav-item active" data-tab="learn" type="button">
-        <span class="nav-icon">⚡</span>
-        <span class="nav-label">집중암기</span>
-      </button>
-      <button class="nav-item" data-tab="flashcard" type="button">
-        <span class="nav-icon">🃏</span>
-        <span class="nav-label">플래시카드</span>
-      </button>
-      <button class="nav-item" data-tab="audio" type="button">
-        <span class="nav-icon">🎧</span>
-        <span class="nav-label">귀로암기</span>
-      </button>
-      <button class="nav-item" data-tab="list" type="button">
-        <span class="nav-icon">📋</span>
-        <span class="nav-label">단어장</span>
-      </button>
-    </nav>
+    <!-- 하단 네비게이션 (영역에 따라 자동 전환) -->
+    <nav id="bottomNav" class="bottom-nav" aria-label="주요 학습 메뉴"></nav>
   </div>
 
   <!-- 토스트 알림 -->
@@ -184,6 +177,14 @@
         </div>
       </div>
 
+      <div class="setting-row" style="flex-direction: column; align-items: stretch; gap: 6px;">
+        <div>
+          <div class="setting-title">📸 Part 5 사진 자동인식 API 키 (선택)</div>
+          <div class="setting-sub">Vercel 환경변수(GEMINI_API_KEY)를 설정했다면 비워두셔도 됩니다</div>
+        </div>
+        <input id="inputGeminiKey" class="text-input" type="password" placeholder="AIza... (Google AI Studio 무료 키)" style="margin-bottom: 0;" />
+      </div>
+
       <button id="btnTestVoice" class="btn btn-secondary full-width mt-12" type="button">
         🔊 네이티브 발음 테스트 ("unanimously")
       </button>
@@ -191,8 +192,10 @@
   </dialog>
 
   <script src="js/words.js"></script>
+  <script src="js/part5-data.js"></script>
   <script src="js/tts.js"></script>
   <script src="js/storage.js"></script>
+  <script src="js/part5.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
