@@ -17,10 +17,11 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  // 허용 언어 매핑
+  // 허용 언어 매핑 (미국 / 영국 / 호주 / 한국어)
   const langMap = {
     'en-US': 'en-US',
     'en-GB': 'en-GB',
+    'en-AU': 'en-AU',
     'ko-KR': 'ko'
   };
   const tl = langMap[rawLang] || 'en-US';

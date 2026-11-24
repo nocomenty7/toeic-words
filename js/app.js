@@ -49,10 +49,12 @@
   const bottomNavEl = document.getElementById('bottomNav');
   const activeDeckNameEl = document.getElementById('activeDeckName');
   const btnDeckPicker = document.getElementById('btnDeckPicker');
-  const btnQuickAccent = document.getElementById('btnQuickAccent');
   const toastEl = document.getElementById('toast');
   const deckDialog = document.getElementById('deckDialog');
   const settingsDialog = document.getElementById('settingsDialog');
+
+  // 현재 카드의 임시 선택 억양 (새 카드마다 기본 'en-US' 미국발음)
+  let cardAccent = 'en-US';
 
   let toastTimer = null;
 
@@ -90,12 +92,58 @@
     }, 2200);
   }
 
-  function speakWord(text, slow = false, onEnd) {
-    const baseRate = state.settings.rate || 0.95;
+  function speakWord(text, slow = false, onEnd, accentOverride) {
+    const baseRate = state.settings.rate || 1.1;
     window.TTS.speak(text, {
-      lang: state.settings.accent || 'en-US',
-      rate: slow ? 0.7 : baseRate,
+      lang: accentOverride || 'en-US',
+      rate: slow ? 0.75 : baseRate,
       onEnd
+    });
+  }
+
+  function renderAudioControls(activeAccent = 'en-US', label = '🔊 발음 듣기') {
+    return `
+      <div class="audio-controls" data-audio-bar>
+        <button class="speak-btn" data-audio-play="normal" type="button">${label}</button>
+        <button class="speak-btn-slow" data-audio-play="slow" type="button">🐢 천천히</button>
+        <span class="flag-group" role="group" aria-label="발음 국가 선택">
+          <button class="flag-btn ${activeAccent === 'en-US' ? 'active' : ''}" data-audio-accent="en-US" type="button" title="미국 발음">🇺🇸</button>
+          <button class="flag-btn ${activeAccent === 'en-GB' ? 'active' : ''}" data-audio-accent="en-GB" type="button" title="영국 발음">🇬🇧</button>
+          <button class="flag-btn ${activeAccent === 'en-AU' ? 'active' : ''}" data-audio-accent="en-AU" type="button" title="호주 발음">🇦🇺</button>
+        </span>
+      </div>
+    `;
+  }
+
+  function bindAudioControls(rootEl, text) {
+    if (!rootEl) return;
+    rootEl.querySelectorAll('[data-audio-bar]').forEach((bar) => {
+      const playNormal = bar.querySelector('[data-audio-play="normal"]');
+      const playSlow = bar.querySelector('[data-audio-play="slow"]');
+      const flagBtns = bar.querySelectorAll('[data-audio-accent]');
+
+      if (playNormal) {
+        playNormal.addEventListener('click', (e) => {
+          e.stopPropagation();
+          speakWord(text, false, null, cardAccent);
+        });
+      }
+      if (playSlow) {
+        playSlow.addEventListener('click', (e) => {
+          e.stopPropagation();
+          speakWord(text, true, null, cardAccent);
+        });
+      }
+      flagBtns.forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          cardAccent = btn.dataset.audioAccent;
+          rootEl.querySelectorAll('[data-audio-accent]').forEach((b) => {
+            b.classList.toggle('active', b.dataset.audioAccent === cardAccent);
+          });
+          speakWord(text, false, null, cardAccent);
+        });
+      });
     });
   }
 
@@ -118,7 +166,6 @@
       activeDeckNameEl.textContent = deck.name;
       btnDeckPicker.style.opacity = '1';
     }
-    btnQuickAccent.textContent = state.settings.accent === 'en-GB' ? '🇬🇧 UK' : '🇺🇸 US';
 
     document.querySelectorAll('.sec-tab').forEach((btn) => {
       const active = btn.dataset.section === currentSection;
@@ -206,7 +253,7 @@
   function render() {
     updateHeader();
     if (currentSection === 'part5') {
-      const p5Ctx = { state, mainEl, showToast, speakWord, switchTab };
+      const p5Ctx = { state, mainEl, showToast, speakWord, switchTab, renderAudioControls, bindAudioControls };
       if (currentTab === 'p5_list') window.Part5Module.renderList(p5Ctx);
       else if (currentTab === 'p5_add') window.Part5Module.renderAdd(p5Ctx);
       else window.Part5Module.renderQuiz(p5Ctx);
@@ -434,6 +481,7 @@
   function prepareCurrentTask() {
     if (!session || !session.queue.length) return;
     const task = session.queue[0];
+    cardAccent = 'en-US';
     session.currentRevealed = false;
     session.answered = false;
     session.selectedChoiceIdx = null;
@@ -447,13 +495,13 @@
       session.choices = null;
     }
 
-    // 자동 발음
+    // 자동 발음 (디폴트 미국 발음)
     if (state.settings.autoSpeak && (task.type === 'peek' || task.type === 'en2ko' || task.type === 'listen')) {
       setTimeout(() => {
         if (session && session.queue[0] === task) {
-          speakWord(task.word.word);
+          speakWord(task.word.word, false, null, 'en-US');
         }
-      }, 180);
+      }, 150);
     }
   }
 
@@ -500,10 +548,7 @@
           ${w.pos ? `<div class="prompt-pos">${escapeHtml(w.pos)}</div>` : ''}
           <div class="prompt-word">${escapeHtml(w.word)}</div>
           ${w.phonetic ? `<div class="prompt-phonetic">${escapeHtml(w.phonetic)}</div>` : ''}
-          <div class="audio-controls">
-            <button class="speak-btn" id="btnSpeakNormal" type="button">🔊 발음 듣기</button>
-            <button class="speak-btn-slow" id="btnSpeakSlow" type="button">🐢 0.7x</button>
-          </div>
+          ${renderAudioControls(cardAccent, '🔊 발음 듣기')}
 
           ${session.currentRevealed ? `
             <div class="reveal-box">
@@ -511,14 +556,14 @@
               ${renderTipAndExample(w)}
             </div>
           ` : `
-            <div style="margin-top: 22px;">
-              <button class="btn btn-secondary full-width" id="btnRevealPeek" type="button">👀 뜻 확인하기 (먼저 떠올려 보세요)</button>
+            <div style="margin-top: 14px;">
+              <button class="btn btn-secondary full-width" id="btnRevealPeek" type="button">👀 뜻 확인하기</button>
             </div>
           `}
         </div>
 
         ${session.currentRevealed ? `
-          <div class="btn-row mt-16">
+          <div class="btn-row mt-12">
             <button class="btn btn-danger-outline" id="btnPeekUnknown" type="button">🤔 헷갈려요</button>
             <button class="btn btn-success" id="btnPeekKnown" type="button">👌 이해했어요</button>
           </div>
@@ -535,30 +580,20 @@
             ${w.pos ? `<div class="prompt-pos">${escapeHtml(w.pos)}</div>` : ''}
             <div class="prompt-word">${escapeHtml(w.word)}</div>
             ${w.phonetic ? `<div class="prompt-phonetic">${escapeHtml(w.phonetic)}</div>` : ''}
-            <div class="audio-controls">
-              <button class="speak-btn" id="btnSpeakNormal" type="button">🔊 발음 듣기</button>
-              <button class="speak-btn-slow" id="btnSpeakSlow" type="button">🐢 0.7x</button>
-            </div>
+            ${renderAudioControls(cardAccent, '🔊 발음 듣기')}
           ` : isListenPrompt ? `
-            <div style="font-size: 13px; color: var(--text-sub); margin-bottom: 10px;">발음을 듣고 알맞은 뜻을 고르세요</div>
-            <div class="audio-controls" style="margin-top: 4px;">
-              <button class="btn btn-primary" id="btnSpeakNormal" type="button" style="border-radius: 999px; padding: 0 24px;">🔊 다시 듣기</button>
-              <button class="speak-btn-slow" id="btnSpeakSlow" type="button">🐢 천천히</button>
-            </div>
+            <div style="font-size: 12.5px; color: var(--text-sub); margin-bottom: 4px;">발음을 듣고 알맞은 뜻을 고르세요</div>
+            ${renderAudioControls(cardAccent, '🔊 다시 듣기')}
             ${session.answered ? `
               <div class="reveal-box">
-                <div class="prompt-word" style="font-size: 24px;">${escapeHtml(w.word)}</div>
+                <div class="prompt-word" style="font-size: 22px;">${escapeHtml(w.word)}</div>
                 ${w.phonetic ? `<div class="prompt-phonetic">${escapeHtml(w.phonetic)}</div>` : ''}
               </div>
             ` : ''}
           ` : `
             ${w.pos ? `<div class="prompt-pos">${escapeHtml(w.pos)}</div>` : ''}
             <div class="prompt-meaning-main">${escapeHtml(w.meaning)}</div>
-            ${session.answered ? `
-              <div class="audio-controls">
-                <button class="speak-btn" id="btnSpeakNormal" type="button">🔊 ${escapeHtml(w.word)}</button>
-              </div>
-            ` : ''}
+            ${session.answered ? renderAudioControls(cardAccent, `🔊 ${escapeHtml(w.word)}`) : ''}
           `}
 
           ${session.answered ? renderTipAndExample(w) : ''}
@@ -582,7 +617,7 @@
         </div>
 
         ${session.answered ? `
-          <button class="btn btn-primary full-width mt-16" id="btnNextTask" type="button">
+          <button class="btn btn-primary full-width mt-12" id="btnNextTask" type="button">
             다음 문제로 →
           </button>
         ` : ''}
@@ -596,7 +631,7 @@
           <div class="hint-letters">${escapeHtml(makeHintPattern(w.word))}</div>
 
           ${!session.recallChecked ? `
-            <div style="font-size: 13px; color: var(--text-sub); margin: 6px 0 14px;">
+            <div style="font-size: 12.5px; color: var(--text-sub); margin: 4px 0 12px;">
               영단어와 발음을 머릿속으로 떠올린 뒤 확인해 보세요
             </div>
             <button class="btn btn-primary full-width" id="btnRecallPeek" type="button">👀 정답 & 발음 확인하기</button>
@@ -604,17 +639,14 @@
             <div class="reveal-box">
               <div class="prompt-word" style="color: var(--primary);">${escapeHtml(w.word)}</div>
               ${w.phonetic ? `<div class="prompt-phonetic">${escapeHtml(w.phonetic)}</div>` : ''}
-              <div class="audio-controls">
-                <button class="speak-btn" id="btnSpeakNormal" type="button">🔊 발음 듣기</button>
-                <button class="speak-btn-slow" id="btnSpeakSlow" type="button">🐢 0.7x</button>
-              </div>
+              ${renderAudioControls(cardAccent, '🔊 발음 듣기')}
               ${renderTipAndExample(w)}
             </div>
           `}
         </div>
 
         ${session.recallChecked ? `
-          <div class="btn-row mt-16">
+          <div class="btn-row mt-12">
             <button class="btn btn-danger-outline" id="btnRecallWrong" type="button">😅 못 떠올렸어요</button>
             <button class="btn btn-success" id="btnRecallRight" type="button">👌 떠올렸어요!</button>
           </div>
@@ -624,11 +656,11 @@
 
     mainEl.innerHTML = `
       <div class="session-header">
-        <button class="icon-btn" id="btnExitSession" type="button" aria-label="세션 나가기">✕</button>
+        <button class="icon-btn" id="btnExitSession" type="button" aria-label="세션 나가기" style="width: 32px; height: 32px;">✕</button>
         <div class="session-bar-wrap">
           <div class="session-meta">
-            <span>진행률 ${pct}%</span>
-            <span>남은 단계 ${session.queue.length}</span>
+            <span class="phase-badge ${task.isRetry ? 'retry' : ''}">${phaseLabel}</span>
+            <span>${pct}% · 남음 ${session.queue.length}</span>
           </div>
           <div class="session-track">
             <div class="session-fill" style="width: ${pct}%"></div>
@@ -636,7 +668,6 @@
         </div>
       </div>
 
-      <div class="phase-badge ${task.isRetry ? 'retry' : ''}">${phaseLabel}</div>
       ${bodyHtml}
     `;
 
@@ -677,11 +708,7 @@
       });
     }
 
-    const speakNormal = document.getElementById('btnSpeakNormal');
-    if (speakNormal) speakNormal.addEventListener('click', () => speakWord(w.word, false));
-
-    const speakSlow = document.getElementById('btnSpeakSlow');
-    if (speakSlow) speakSlow.addEventListener('click', () => speakWord(w.word, true));
+    bindAudioControls(mainEl, w.word);
 
     // Peek 이벤트
     const revealBtn = document.getElementById('btnRevealPeek');
@@ -875,6 +902,7 @@
     if (fcState.index >= fcState.cards.length) {
       fcState.index = 0;
     }
+    cardAccent = 'en-US';
 
     const filters = [
       { id: 'unmastered', label: '미암기' },
@@ -927,19 +955,13 @@
                 ${card.pos ? `<div class="prompt-pos">${escapeHtml(card.pos)}</div>` : ''}
                 <div class="prompt-word">${escapeHtml(card.word)}</div>
                 ${card.phonetic ? `<div class="prompt-phonetic">${escapeHtml(card.phonetic)}</div>` : ''}
-                <div class="audio-controls">
-                  <button class="speak-btn" id="btnFcSpeak" type="button">🔊 발음</button>
-                  <button class="speak-btn-slow" id="btnFcSlow" type="button">🐢 0.7x</button>
-                </div>
+                ${renderAudioControls(cardAccent, '🔊 발음 듣기')}
               ` : fcState.frontMode === 'ko' ? `
                 ${card.pos ? `<div class="prompt-pos">${escapeHtml(card.pos)}</div>` : ''}
                 <div class="prompt-meaning-main">${escapeHtml(card.meaning)}</div>
               ` : `
-                <div style="font-size: 13px; color: var(--text-sub); margin-bottom: 12px;">발음만 듣고 단어와 뜻을 떠올려 보세요</div>
-                <div class="audio-controls">
-                  <button class="btn btn-primary" id="btnFcSpeak" type="button" style="border-radius: 999px; padding: 0 24px;">🔊 발음 듣기</button>
-                  <button class="speak-btn-slow" id="btnFcSlow" type="button">🐢 0.7x</button>
-                </div>
+                <div style="font-size: 13px; color: var(--text-sub); margin-bottom: 10px;">발음만 듣고 단어와 뜻을 떠올려 보세요</div>
+                ${renderAudioControls(cardAccent, '🔊 발음 듣기')}
               `}
               <div class="fc-tap-hint">카드를 탭하면 뒷면이 열립니다 · 좌/우 스와이프</div>
             </div>
@@ -947,13 +969,10 @@
             <!-- 뒷면 -->
             <div class="fc-face fc-back">
               <div class="fc-counter">${fcState.index + 1} / ${fcState.cards.length}</div>
-              <div class="prompt-word" style="font-size: 26px;">${escapeHtml(card.word)}</div>
+              <div class="prompt-word" style="font-size: 24px;">${escapeHtml(card.word)}</div>
               ${card.phonetic ? `<div class="prompt-phonetic">${escapeHtml(card.phonetic)}</div>` : ''}
-              <div class="reveal-meaning" style="margin-top: 10px;">${escapeHtml(card.meaning)}</div>
-              <div class="audio-controls">
-                <button class="speak-btn" id="btnFcSpeakBack" type="button">🔊 발음</button>
-                <button class="speak-btn-slow" id="btnFcSlowBack" type="button">🐢 0.7x</button>
-              </div>
+              <div class="reveal-meaning" style="margin-top: 8px;">${escapeHtml(card.meaning)}</div>
+              ${renderAudioControls(cardAccent, '🔊 발음 듣기')}
               <div style="width: 100%;">${renderTipAndExample(card)}</div>
             </div>
           </div>
@@ -1032,19 +1051,7 @@
       }
     }, { passive: true });
 
-    const bindSpeak = (id, slow) => {
-      const el = document.getElementById(id);
-      if (el) {
-        el.addEventListener('click', (e) => {
-          e.stopPropagation();
-          speakWord(card.word, slow);
-        });
-      }
-    };
-    bindSpeak('btnFcSpeak', false);
-    bindSpeak('btnFcSlow', true);
-    bindSpeak('btnFcSpeakBack', false);
-    bindSpeak('btnFcSlowBack', true);
+    bindAudioControls(mainEl, card.word);
 
     const starBtn = document.getElementById('btnFcStar');
     if (starBtn) {
@@ -1561,7 +1568,6 @@
         b.classList.toggle('active', String(b.dataset.val) === String(val));
       });
     };
-    setSeg('segAccent', state.settings.accent);
     setSeg('segRate', state.settings.rate);
     setSeg('segChunk', state.settings.chunkSize);
     setSeg('segTheme', state.settings.theme);
@@ -1585,12 +1591,6 @@
       }
     });
     document.getElementById('btnOpenSettings').addEventListener('click', openSettingsDialog);
-    btnQuickAccent.addEventListener('click', () => {
-      state.settings.accent = state.settings.accent === 'en-US' ? 'en-GB' : 'en-US';
-      window.Storage.save(state);
-      updateHeader();
-      showToast(state.settings.accent === 'en-GB' ? '🇬🇧 영국식 발음으로 전환' : '🇺🇸 미국식 발음으로 전환');
-    });
 
     // 모달 닫기 버튼 & 백드롭 클릭
     document.querySelectorAll('[data-close]').forEach((btn) => {
@@ -1691,15 +1691,6 @@
     });
 
     // 설정 모달 바인딩
-    document.querySelectorAll('#segAccent button').forEach((b) => {
-      b.addEventListener('click', () => {
-        state.settings.accent = b.dataset.val;
-        window.Storage.save(state);
-        syncSettingsModal();
-        updateHeader();
-      });
-    });
-
     document.querySelectorAll('#segRate button').forEach((b) => {
       b.addEventListener('click', () => {
         state.settings.rate = Number(b.dataset.val);

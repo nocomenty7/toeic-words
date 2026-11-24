@@ -30,6 +30,10 @@ window.TTS = (function () {
     'Daniel', 'Martha', 'Serena', 'Arthur', 'Kate',
     'Google UK English Female', 'Google UK English Male'
   ];
+  const PREFERRED_AU = [
+    'Karen', 'Lee', 'Matilda', 'Gordon', 'Catherine',
+    'Google Australian English'
+  ];
 
   function loadVoices() {
     if (!synth) return [];
@@ -87,8 +91,9 @@ window.TTS = (function () {
     }
 
     const isGB = lang === 'en-GB';
-    const prefList = isGB ? PREFERRED_GB : PREFERRED_US;
-    const targetPrefix = isGB ? 'en-gb' : 'en-us';
+    const isAU = lang === 'en-AU';
+    const prefList = isGB ? PREFERRED_GB : isAU ? PREFERRED_AU : PREFERRED_US;
+    const targetPrefix = isGB ? 'en-gb' : isAU ? 'en-au' : 'en-us';
     const exactLangVoices = voices.filter(
       (v) => v.lang && v.lang.toLowerCase().replace('_', '-').startsWith(targetPrefix)
     );
@@ -258,9 +263,9 @@ window.TTS = (function () {
 
   function getActiveVoiceLabel(lang = 'en-US') {
     if (canUseApiTts()) {
-      return lang === 'en-GB'
-        ? '클라우드 네이티브 영국 발음 (MP3)'
-        : '클라우드 네이티브 미국 발음 (MP3)';
+      if (lang === 'en-GB') return '클라우드 네이티브 영국 발음 (MP3)';
+      if (lang === 'en-AU') return '클라우드 네이티브 호주 발음 (MP3)';
+      return '클라우드 네이티브 미국 발음 (MP3)';
     }
     const v = pickVoice(lang);
     return v ? `${v.name} (${v.lang})` : '시스템 기본 음성';

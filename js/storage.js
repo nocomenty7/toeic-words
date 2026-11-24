@@ -8,8 +8,8 @@ window.Storage = (function () {
   const KEY_DATA = 'toeic_vocab_app_v1';
 
   const DEFAULT_SETTINGS = {
-    accent: 'en-US', // 'en-US' | 'en-GB'
-    rate: 0.95,      // 0.75 | 0.95 | 1.15
+    accent: 'en-US', // 기본 디폴트 미국발음
+    rate: 1.1,       // 0.85 | 1.1 | 1.3 (일반 속도 빠르게 개선)
     autoSpeak: true,
     showTips: true,
     theme: 'system', // 'system' | 'light' | 'dark'
@@ -67,8 +67,10 @@ window.Storage = (function () {
         save(init);
         return init;
       }
-      // 설정 기본값 병합
+      // 설정 기본값 병합 (기존 0.95 속도는 1.1로 자동 업그레이드, 기본 발음은 미국식)
       parsed.settings = { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) };
+      if (parsed.settings.rate === 0.95) parsed.settings.rate = 1.1;
+      parsed.settings.accent = 'en-US';
       parsed.progress = parsed.progress || {};
       if (!Array.isArray(parsed.part5)) {
         parsed.part5 = getDefaultPart5();

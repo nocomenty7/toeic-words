@@ -135,10 +135,7 @@ window.Part5Module = (function () {
                   : `❌ 아쉽네요! 정답은 (${item.answer}) ${escapeHtml(item.choices[item.answer])}`}
               </div>
 
-              <div class="audio-controls" style="margin-top: 10px;">
-                <button class="speak-btn" id="btnP5SpeakSent" type="button">🔊 완성 문장 듣기</button>
-                <button class="speak-btn-slow" id="btnP5SpeakSlow" type="button">🐢 천천히</button>
-              </div>
+              ${ctx.renderAudioControls('en-US', '🔊 완성 문장 듣기')}
 
               ${item.keyPoint ? `
                 <div class="p5-keypoint">
@@ -221,11 +218,7 @@ window.Part5Module = (function () {
       });
     });
 
-    const speakSent = document.getElementById('btnP5SpeakSent');
-    if (speakSent) speakSent.addEventListener('click', () => speakWord(buildFullSentence(item), false));
-
-    const speakSlow = document.getElementById('btnP5SpeakSlow');
-    if (speakSlow) speakSlow.addEventListener('click', () => speakWord(buildFullSentence(item), true));
+    ctx.bindAudioControls(mainEl, buildFullSentence(item));
 
     const prevBtn = document.getElementById('btnP5Prev');
     if (prevBtn) {

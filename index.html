@@ -22,9 +22,6 @@
       </button>
 
       <div class="top-bar-actions">
-        <button id="btnQuickAccent" class="icon-chip" type="button" aria-label="미국식 영국식 발음 전환">
-          🇺🇸 US
-        </button>
         <button id="btnOpenSettings" class="icon-btn" type="button" aria-label="설정 열기">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"></circle>
@@ -109,24 +106,13 @@
     <div class="modal-body">
       <div class="setting-row">
         <div>
-          <div class="setting-title">네이티브 발음 억양</div>
-          <div class="setting-sub" id="activeVoiceName">음성 확인 중...</div>
-        </div>
-        <div class="segmented" id="segAccent">
-          <button type="button" data-val="en-US">🇺🇸 미국</button>
-          <button type="button" data-val="en-GB">🇬🇧 영국</button>
-        </div>
-      </div>
-
-      <div class="setting-row">
-        <div>
-          <div class="setting-title">발음 속도</div>
-          <div class="setting-sub">잘 안 들리면 0.75x 추천</div>
+          <div class="setting-title">일반 발음 속도</div>
+          <div class="setting-sub" id="activeVoiceName">기본 1.1x · 느리게는 '천천히' 버튼 사용</div>
         </div>
         <div class="segmented" id="segRate">
-          <button type="button" data-val="0.75">0.75x</button>
-          <button type="button" data-val="0.95">1.0x</button>
-          <button type="button" data-val="1.15">1.15x</button>
+          <button type="button" data-val="0.9">보통</button>
+          <button type="button" data-val="1.1">빠르게</button>
+          <button type="button" data-val="1.3">더 빠르게</button>
         </div>
       </div>
 
