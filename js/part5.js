@@ -17,6 +17,7 @@ window.Part5Module = (function () {
     addMode: 'photo', // photo | text | manual
     defaultTestName: 'Test 2',
     analyzing: false,
+    errorMsg: '',
     previewImageUrl: '',
     pendingItems: []
   };
@@ -389,15 +390,22 @@ window.Part5Module = (function () {
   /* =========================================================
      3. 사진 / 텍스트 자동 등록 탭 (p5_add)
      ========================================================= */
-  function compressImageToBase64(file, maxSide = 1400, quality = 0.82) {
+  function compressImageToBase64(file, maxSide = 1200, quality = 0.78) {
     return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error('파일 읽기 실패'));
-      reader.onload = () => {
-        const img = new Image();
-        img.onerror = () => reject(new Error('이미지 디코딩 실패'));
-        img.onload = () => {
-          let { width, height } = img;
+      // FileReader 대신 ObjectURL을 사용해 모바일 고해상도 카메라 사진의 메모리 초과(브라우저 새로고침) 방지
+      const objectUrl = URL.createObjectURL(file);
+      const img = new Image();
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error('이미지 디코딩 실패 (JPG/PNG 사진으로 다시 시도해 주세요)'));
+      };
+      img.onload = () => {
+        try {
+          let { naturalWidth: width, naturalHeight: height } = img;
+          if (!width || !height) {
+            width = img.width;
+            height = img.height;
+          }
           if (width > maxSide || height > maxSide) {
             if (width >= height) {
               height = Math.round((height * maxSide) / width);
@@ -413,12 +421,18 @@ window.Part5Module = (function () {
           const ctx2d = canvas.getContext('2d');
           ctx2d.drawImage(img, 0, 0, width, height);
           const dataUrl = canvas.toDataURL('image/jpeg', quality);
+          // 캔버스 메모리 즉시 해제
+          canvas.width = 1;
+          canvas.height = 1;
+          URL.revokeObjectURL(objectUrl);
           const base64 = dataUrl.split(',')[1];
           resolve({ base64, dataUrl, mimeType: 'image/jpeg' });
-        };
-        img.src = reader.result;
+        } catch (err) {
+          URL.revokeObjectURL(objectUrl);
+          reject(err);
+        }
       };
-      reader.readAsDataURL(file);
+      img.src = objectUrl;
     });
   }
 
@@ -486,6 +500,16 @@ window.Part5Module = (function () {
               <div>AI가 문제를 읽고 정답·해설을 작성하는 중...</div>
             </div>
           ` : ''}
+
+          ${p5State.errorMsg ? `
+            <div class="p5-result-banner no mt-12" style="font-size: 13px; line-height: 1.5; word-break: break-word;">
+              ⚠️ ${escapeHtml(p5State.errorMsg)}
+            </div>
+          ` : ''}
+
+          <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 10px; line-height: 1.45;">
+            💡 일부 휴대폰에서 카메라 촬영 직후 브라우저가 초기화된다면, 기본 카메라로 먼저 찍은 뒤 <strong>앨범에서 선택</strong>을 이용해 주세요.
+          </div>
         </section>
       ` : p5State.addMode === 'text' ? `
         <section class="card mt-12">
@@ -576,8 +600,10 @@ window.Part5Module = (function () {
     // 사진 업로드 처리
     const handleFileSelect = async (e) => {
       const file = e.target.files && e.target.files[0];
+      e.target.value = '';
       if (!file) return;
       p5State.analyzing = true;
+      p5State.errorMsg = '';
       p5State.pendingItems = [];
       renderAdd(ctx);
 
@@ -588,17 +614,19 @@ window.Part5Module = (function () {
 
         const items = await callAnalyzeApi({ imageBase64: base64, mimeType }, state);
         if (!items.length) {
-          showToast('사진에서 Part 5 문제를 찾지 못했어요. 더 가까이 선명하게 찍어 주세요.');
+          p5State.errorMsg = '사진에서 Part 5 문제를 찾지 못했어요. 문제와 보기(A~D)가 잘 보이게 가까이 찍어 다시 시도해 주세요.';
+          showToast('사진에서 문제를 찾지 못했어요');
         } else {
           p5State.pendingItems = items;
           showToast(`✨ ${items.length}개 문제를 자동으로 분석했어요!`);
         }
       } catch (err) {
         if (err.code === 'NO_API_KEY') {
-          alert('⚙️ Gemini API 키가 필요합니다!\n\n1) 우측 상단 톱니바퀴(설정)에서 무료 Gemini API 키를 입력하거나\n2) Vercel 프로젝트 Settings → Environment Variables에 GEMINI_API_KEY를 추가해 주세요.');
+          p5State.errorMsg = 'Gemini API 키가 필요합니다. 우측 상단 ⚙️ 설정에서 무료 키를 입력하거나 Vercel 환경변수(GEMINI_API_KEY)를 등록해 주세요.';
         } else {
-          showToast(err.message || '사진 분석 중 오류가 발생했어요');
+          p5State.errorMsg = err.message || '사진 분석 중 오류가 발생했어요';
         }
+        showToast('분석 실패 — 아래 오류 내용을 확인해 주세요');
       } finally {
         p5State.analyzing = false;
         renderAdd(ctx);

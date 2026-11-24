@@ -2,7 +2,93 @@
  * Vercel Serverless Function: /api/analyze-part5
  * 사진(채점된 토익 Part 5 오답 문제) 또는 텍스트를 Gemini Vision으로 분석하여
  * 문제, 보기(A~D), 정답, 친절한 한국어 해설을 JSON으로 자동 생성합니다.
+ *
+ * - Google AI Studio의 모델 종료/변경에도 깨지지 않도록 /v1beta/models에서
+ *   현재 사용 가능한 최신 Gemini Flash 비전 모델을 자동 탐색·캐시하여 호출합니다.
  */
+
+let cachedModels = null;
+let cachedAt = 0;
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+function scoreModelName(fullName) {
+  const name = String(fullName || '').replace(/^models\//, '').toLowerCase();
+  if (!name.startsWith('gemini-')) return -1;
+  if (
+    name.includes('embedding') ||
+    name.includes('aqa') ||
+    name.includes('tts') ||
+    name.includes('audio') ||
+    name.includes('image') ||
+    name.includes('imagen') ||
+    name.includes('veo') ||
+    name.includes('robotics') ||
+    name.includes('thinking') ||
+    name.includes('learnlm') ||
+    name.includes('bisect')
+  ) {
+    return -1;
+  }
+
+  let score = 0;
+  // 버전 번호 추출 (예: gemini-3.0-flash -> 3.0, gemini-2.5-flash -> 2.5)
+  const verMatch = name.match(/gemini-(\d+(?:\.\d+)?)/);
+  const ver = verMatch ? parseFloat(verMatch[1]) : 1.0;
+  score += ver * 100;
+
+  // 빠르고 무료 할당량이 넉넉한 flash 우선
+  if (name.includes('flash')) score += 50;
+  if (name.includes('flash-lite')) score -= 12;
+  if (name.includes('pro')) score += 10;
+
+  // 안정(정식) 버전을 preview/exp보다 소폭 우선
+  if (name.includes('preview') || name.includes('exp')) score -= 5;
+  if (name.endsWith('-latest')) score += 4;
+
+  return score;
+}
+
+async function getCandidateModels(apiKey) {
+  const now = Date.now();
+  if (cachedModels && cachedModels.length && now - cachedAt < CACHE_TTL_MS) {
+    return cachedModels;
+  }
+
+  try {
+    const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+    const resp = await fetch(listUrl);
+    if (resp.ok) {
+      const json = await resp.json();
+      const models = (json.models || [])
+        .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+        .map((m) => ({
+          id: String(m.name || '').replace(/^models\//, ''),
+          score: scoreModelName(m.name)
+        }))
+        .filter((m) => m.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map((m) => m.id);
+
+      if (models.length) {
+        cachedModels = models.slice(0, 5);
+        cachedAt = now;
+        return cachedModels;
+      }
+    }
+  } catch (_) {
+    // 목록 조회 실패 시 기본 후보군 사용
+  }
+
+  return ['gemini-flash-latest', 'gemini-3-flash-preview', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
+}
+
+function parseJsonSafe(rawText) {
+  const trimmed = String(rawText || '').trim();
+  // 혹시 마크다운 코드블록(```json ... ```)으로 감싸져 있을 경우 제거
+  const stripped = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  return JSON.parse(stripped);
+}
+
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' });
@@ -54,7 +140,7 @@ module.exports = async function handler(req, res) {
       },
       "answer": "B",
       "translation": "자연스러운 한국어 문장 해석",
-      "keyPoint": "1줄 핵심 암기 포인트 (예: last week(단발성 과거) + 방향 변경 → abruptly)",
+      "keyPoint": "1줄 핵심 암기 포인트",
       "explanation": "친절하고 명확한 핵심 해설",
       "choiceNotes": {
         "A": "(부) 두껍게, 빽빽하게 - 문맥 부적합",
@@ -84,38 +170,52 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(key)}`;
+    const candidates = await getCandidateModels(key);
+    let lastError = '알 수 없는 오류';
+    let lastStatus = 502;
 
-    const upstream = await fetch(geminiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          temperature: 0.2
+    for (const modelId of candidates) {
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(key)}`;
+
+      const upstream = await fetch(geminiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.2
+          }
+        })
+      });
+
+      const data = await upstream.json().catch(() => ({}));
+
+      if (!upstream.ok) {
+        lastStatus = upstream.status;
+        lastError = data?.error?.message || `Gemini API 오류 (${upstream.status})`;
+        // 모델 종료/미지원/404/429일 때는 다음 후보 모델로 자동 재시도
+        if (upstream.status === 404 || upstream.status === 400 || upstream.status === 429 || /no longer available|not found|deprecated/i.test(lastError)) {
+          continue;
         }
-      })
-    });
+        break;
+      }
 
-    const data = await upstream.json();
+      const rawJsonText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!rawJsonText) {
+        lastError = 'AI 응답이 비어 있습니다. 사진을 더 선명하게 찍어 다시 시도해 주세요.';
+        continue;
+      }
 
-    if (!upstream.ok) {
-      const msg = data?.error?.message || `Gemini API 오류 (${upstream.status})`;
-      res.status(upstream.status).json({ error: 'GEMINI_ERROR', message: msg });
+      const parsed = parseJsonSafe(rawJsonText);
+      const items = Array.isArray(parsed.items) ? parsed.items : [];
+      res.status(200).json({ items, model: modelId });
       return;
     }
 
-    const rawJsonText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!rawJsonText) {
-      res.status(502).json({ error: 'EMPTY_RESPONSE', message: 'AI 응답이 비어 있습니다. 사진을 더 선명하게 찍어 다시 시도해 주세요.' });
-      return;
-    }
-
-    const parsed = JSON.parse(rawJsonText);
-    const items = Array.isArray(parsed.items) ? parsed.items : [];
-
-    res.status(200).json({ items });
+    // 모든 후보 실패 시 캐시 무효화
+    cachedModels = null;
+    res.status(lastStatus).json({ error: 'GEMINI_ERROR', message: lastError });
   } catch (err) {
     res.status(500).json({
       error: 'ANALYZE_ERROR',

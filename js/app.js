@@ -8,6 +8,24 @@
   let currentSection = 'vocab'; // 'vocab' | 'part5'
   let currentTab = 'learn';     // vocab: learn|flashcard|audio|list | part5: p5_quiz|p5_list|p5_add
 
+  try {
+    const savedNav = JSON.parse(sessionStorage.getItem('toeic_nav_state') || 'null');
+    if (savedNav && (savedNav.section === 'vocab' || savedNav.section === 'part5')) {
+      currentSection = savedNav.section;
+      currentTab = savedNav.tab || (currentSection === 'part5' ? 'p5_quiz' : 'learn');
+    }
+  } catch (_) {
+    // ignore
+  }
+
+  function saveNavState() {
+    try {
+      sessionStorage.setItem('toeic_nav_state', JSON.stringify({ section: currentSection, tab: currentTab }));
+    } catch (_) {
+      // ignore
+    }
+  }
+
   // 세션 상태 (집중 암기)
   let session = null;
 
@@ -208,6 +226,7 @@
     session = null;
     currentSection = section;
     currentTab = section === 'part5' ? 'p5_quiz' : 'learn';
+    saveNavState();
     renderBottomNav();
     render();
     mainEl.scrollTop = 0;
@@ -241,6 +260,7 @@
     stopAudioAutoplay();
     window.TTS.stop();
     currentTab = tab;
+    saveNavState();
     if (tab !== 'learn') {
       session = null;
     }
