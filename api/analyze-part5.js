@@ -41,9 +41,9 @@ function scoreModelName(fullName) {
   if (name.includes('flash-lite')) score -= 12;
   if (name.includes('pro')) score += 10;
 
-  // 안정(정식) 버전을 preview/exp보다 소폭 우선
-  if (name.includes('preview') || name.includes('exp')) score -= 5;
-  if (name.endsWith('-latest')) score += 4;
+  // 안정(정식) 버전을 preview/exp보다 우선 (preview는 503 트래픽 과부하가 잦음)
+  if (name.includes('preview') || name.includes('exp')) score -= 35;
+  if (name.endsWith('-latest')) score += 6;
 
   return score;
 }
@@ -70,7 +70,7 @@ async function getCandidateModels(apiKey) {
         .map((m) => m.id);
 
       if (models.length) {
-        cachedModels = models.slice(0, 5);
+        cachedModels = models.slice(0, 8);
         cachedAt = now;
         return cachedModels;
       }
@@ -79,7 +79,7 @@ async function getCandidateModels(apiKey) {
     // 목록 조회 실패 시 기본 후보군 사용
   }
 
-  return ['gemini-flash-latest', 'gemini-3-flash-preview', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
+  return ['gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-3-flash-preview', 'gemini-2.0-flash'];
 }
 
 function parseJsonSafe(rawText) {
@@ -194,8 +194,8 @@ module.exports = async function handler(req, res) {
       if (!upstream.ok) {
         lastStatus = upstream.status;
         lastError = data?.error?.message || `Gemini API 오류 (${upstream.status})`;
-        // 모델 종료/미지원/404/429일 때는 다음 후보 모델로 자동 재시도
-        if (upstream.status === 404 || upstream.status === 400 || upstream.status === 429 || /no longer available|not found|deprecated/i.test(lastError)) {
+        // 인증(401/403) 오류가 아닌 이상(503 혼잡, 429 한도, 404 종료, 500 등) 다음 후보 모델로 자동 우회
+        if (upstream.status !== 401 && upstream.status !== 403) {
           continue;
         }
         break;
