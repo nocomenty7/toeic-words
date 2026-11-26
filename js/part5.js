@@ -7,6 +7,8 @@
 window.Part5Module = (function () {
   'use strict';
 
+  const savedTestNum = Math.max(1, parseInt(localStorage.getItem('p5_last_test_num') || '2', 10) || 2);
+
   const p5State = {
     quizFilter: 'unmastered', // unmastered | all | mastered
     quizIndex: 0,
@@ -15,7 +17,8 @@ window.Part5Module = (function () {
     listQuery: '',
     expandedId: null,
     addMode: 'photo', // photo | text | manual
-    defaultTestName: 'Test 2',
+    testNum: savedTestNum,
+    defaultTestName: `Test ${savedTestNum}`,
     analyzing: false,
     progressPct: 0,
     progressLabel: '',
@@ -584,6 +587,38 @@ window.Part5Module = (function () {
       }
     };
 
+    const setTestNum = (num) => {
+      const clamped = Math.max(1, Math.min(99, Number(num) || 1));
+      p5State.testNum = clamped;
+      p5State.defaultTestName = `Test ${clamped}`;
+      try {
+        localStorage.setItem('p5_last_test_num', String(clamped));
+      } catch (_) {
+        // ignore
+      }
+      renderAdd(ctx);
+    };
+
+    const renderTestPicker = () => `
+      <div class="test-picker">
+        <div class="test-picker-head">
+          <span class="test-picker-label">회차 선택</span>
+          <div class="test-stepper">
+            <button type="button" class="stepper-btn" data-test-step="-1" aria-label="이전 회차">−</button>
+            <span class="stepper-val">Test ${p5State.testNum}</span>
+            <button type="button" class="stepper-btn" data-test-step="1" aria-label="다음 회차">+</button>
+          </div>
+        </div>
+        <div class="test-num-pills">
+          ${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => `
+            <button type="button" class="test-num-pill ${p5State.testNum === n ? 'active' : ''}" data-test-num="${n}">
+              Test ${n}
+            </button>
+          `).join('')}
+        </div>
+      </div>
+    `;
+
     mainEl.innerHTML = `
       <div class="segmented full-width" style="display: grid; grid-template-columns: repeat(3, 1fr);">
         <button type="button" data-add-mode="photo" class="${p5State.addMode === 'photo' ? 'active' : ''}">📸 사진 촬영</button>
@@ -595,15 +630,12 @@ window.Part5Module = (function () {
         <section class="card mt-12">
           <div style="font-size: 15px; font-weight: 800;">📸 틀린 문제 사진만 찍으면 끝!</div>
           <p class="helper-desc mt-8">
-            <strong>90도 회전 OK · 빨간펜 필기 자동 무시 · 중앙 1문제만 추출</strong>되도록 최적화되어 있습니다. 위·아래 문제가 살짝 걸려도 따로 자르지 말고 그대로 올리세요!
+            <strong>90도 회전 OK · 연필/빨간펜 필기 자동 무시 · 중앙 1문제만 추출</strong>됩니다. 따로 자르지 말고 그대로 올리세요!
           </p>
 
-          <label style="font-size: 12.5px; font-weight: 700; color: var(--text-sub); display: block; margin-bottom: 6px;">
-            기본 Test 이름 (사진에 없으면 자동 적용)
-          </label>
-          <input id="p5DefaultTest" class="text-input" type="text" value="${escapeHtml(p5State.defaultTestName)}" placeholder="예: Test 2" />
+          ${renderTestPicker()}
 
-          <div class="btn-row mt-8">
+          <div class="btn-row mt-12">
             <label class="btn btn-primary file-label ${p5State.analyzing ? 'disabled' : ''}">
               📷 카메라로 찍기
               <input id="inputP5Camera" type="file" accept="image/*" capture="environment" hidden />
@@ -648,8 +680,8 @@ window.Part5Module = (function () {
           <p class="helper-desc mt-8">
             Part 5 문제와 보기(A~D)를 붙여넣으면 AI가 정답과 해설을 자동으로 완성해 줍니다.
           </p>
-          <input id="p5DefaultTest" class="text-input" type="text" value="${escapeHtml(p5State.defaultTestName)}" placeholder="예: Test 2" />
-          <textarea id="p5RawTextInput" class="text-area" rows="6" placeholder="예:&#10;115. Conradia Computers ___ changed the direction of its marketing strategy last week.&#10;(A) thickly&#10;(B) abruptly&#10;(C) formerly&#10;(D) frequently"></textarea>
+          ${renderTestPicker()}
+          <textarea id="p5RawTextInput" class="text-area mt-8" rows="6" placeholder="예:&#10;115. Conradia Computers ___ changed the direction of its marketing strategy last week.&#10;(A) thickly&#10;(B) abruptly&#10;(C) formerly&#10;(D) frequently"></textarea>
           <button id="btnP5AnalyzeText" class="btn btn-primary full-width" type="button" ${p5State.analyzing ? 'disabled' : ''}>
             ${p5State.analyzing ? '⏳ AI 분석 중...' : '✨ AI로 정답·해설 자동 생성'}
           </button>
@@ -674,10 +706,8 @@ window.Part5Module = (function () {
       ` : `
         <section class="card mt-12">
           <div style="font-size: 15px; font-weight: 800;">✏️ 직접 오답 문제 입력</div>
-          <div class="btn-row mt-8">
-            <input id="mTest" class="text-input" type="text" placeholder="Test 이름 (예: Test 2)" value="${escapeHtml(p5State.defaultTestName)}" />
-            <input id="mNum" class="text-input" type="text" placeholder="번호 (예: 115)" />
-          </div>
+          <div class="mt-8">${renderTestPicker()}</div>
+          <input id="mNum" class="text-input mt-8" type="text" placeholder="문제 번호 (예: 115)" />
           <textarea id="mQuestion" class="text-area" rows="3" placeholder="문제 문장 (빈칸은 ___ 로 입력)"></textarea>
           <div class="btn-row">
             <input id="mA" class="text-input" type="text" placeholder="(A) 보기" />
@@ -739,12 +769,13 @@ window.Part5Module = (function () {
       });
     });
 
-    const testInput = document.getElementById('p5DefaultTest');
-    if (testInput) {
-      testInput.addEventListener('input', (e) => {
-        p5State.defaultTestName = e.target.value;
-      });
-    }
+    // Test 번호 버튼 & +/- 스테퍼 바인딩
+    document.querySelectorAll('[data-test-num]').forEach((btn) => {
+      btn.addEventListener('click', () => setTestNum(btn.dataset.testNum));
+    });
+    document.querySelectorAll('[data-test-step]').forEach((btn) => {
+      btn.addEventListener('click', () => setTestNum(p5State.testNum + Number(btn.dataset.testStep)));
+    });
 
     const cancelBtn = document.getElementById('btnP5Cancel');
     if (cancelBtn) {
@@ -842,7 +873,7 @@ window.Part5Module = (function () {
           return;
         }
         window.Storage.addPart5Items(state, [{
-          testName: document.getElementById('mTest').value || 'Part 5 오답',
+          testName: p5State.defaultTestName,
           number: document.getElementById('mNum').value || '',
           category: document.getElementById('mCat').value || '어휘/문법',
           question,

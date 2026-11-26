@@ -1771,6 +1771,85 @@ button {
   transition: width 0.2s ease-out;
 }
 
+/* Test 회차 원터치 선택기 */
+.test-picker {
+  padding: 10px 12px;
+  border-radius: 13px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+}
+
+.test-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.test-picker-label {
+  font-size: 12.5px;
+  font-weight: 800;
+  color: var(--text-sub);
+}
+
+.test-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stepper-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 16px;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+  color: var(--text);
+}
+
+.stepper-btn:active {
+  transform: scale(0.93);
+}
+
+.stepper-val {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--primary);
+  min-width: 54px;
+  text-align: center;
+}
+
+.test-num-pills {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+
+.test-num-pill {
+  min-height: 34px;
+  border-radius: 9px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-sub);
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.test-num-pill.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+}
+
+.test-num-pill:active {
+  transform: scale(0.95);
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
