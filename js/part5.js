@@ -17,6 +17,13 @@ window.Part5Module = (function () {
     addMode: 'photo', // photo | text | manual
     defaultTestName: 'Test 2',
     analyzing: false,
+    progressPct: 0,
+    progressLabel: '',
+    elapsedSec: 0,
+    lastElapsedSec: 0,
+    abortCtrl: null,
+    progressTimer: null,
+    lastImagePayload: null,
     errorMsg: '',
     previewImageUrl: '',
     pendingItems: []
@@ -390,9 +397,54 @@ window.Part5Module = (function () {
   /* =========================================================
      3. 사진 / 텍스트 자동 등록 탭 (p5_add)
      ========================================================= */
-  function compressImageToBase64(file, maxSide = 1200, quality = 0.78) {
+  function stopProgressTicker() {
+    if (p5State.progressTimer) {
+      clearInterval(p5State.progressTimer);
+      p5State.progressTimer = null;
+    }
+  }
+
+  function updateProgressDom() {
+    const fill = document.getElementById('p5ProgFill');
+    const pctEl = document.getElementById('p5ProgPct');
+    const lblEl = document.getElementById('p5ProgLabel');
+    const timeEl = document.getElementById('p5ProgTime');
+    if (fill) fill.style.width = `${Math.min(100, Math.round(p5State.progressPct))}%`;
+    if (pctEl) pctEl.textContent = `${Math.min(100, Math.round(p5State.progressPct))}%`;
+    if (lblEl) lblEl.textContent = p5State.progressLabel;
+    if (timeEl) timeEl.textContent = `${p5State.elapsedSec.toFixed(1)}초`;
+  }
+
+  function setProgress(pct, label) {
+    p5State.progressPct = pct;
+    if (label) p5State.progressLabel = label;
+    updateProgressDom();
+  }
+
+  function startProgressTicker(startedAt) {
+    stopProgressTicker();
+    p5State.progressTimer = setInterval(() => {
+      if (!p5State.analyzing) {
+        stopProgressTicker();
+        return;
+      }
+      const sec = (Date.now() - startedAt) / 1000;
+      p5State.elapsedSec = sec;
+      // 40%에서 92%까지 시간에 따라 자연스럽게 증가 (멈춘 듯한 느낌 제거)
+      if (p5State.progressPct >= 35 && p5State.progressPct < 92) {
+        const target = Math.min(92, 38 + (1 - Math.exp(-sec / 5.5)) * 54);
+        p5State.progressPct = Math.max(p5State.progressPct, target);
+      }
+      if (sec > 9 && p5State.progressLabel.includes('AI가')) {
+        p5State.progressLabel = '🤖 AI 응답 대기 중... (혼잡 시 다른 모델로 자동 전환 중)';
+      }
+      updateProgressDom();
+    }, 150);
+  }
+
+  function compressImageToBase64(file, maxSide = 960, quality = 0.72) {
     return new Promise((resolve, reject) => {
-      // FileReader 대신 ObjectURL을 사용해 모바일 고해상도 카메라 사진의 메모리 초과(브라우저 새로고침) 방지
+      // FileReader 대신 ObjectURL + 960px 압축으로 모바일 메모리 초과 및 업로드/인식 지연 최소화
       const objectUrl = URL.createObjectURL(file);
       const img = new Image();
       img.onerror = () => {
@@ -421,7 +473,6 @@ window.Part5Module = (function () {
           const ctx2d = canvas.getContext('2d');
           ctx2d.drawImage(img, 0, 0, width, height);
           const dataUrl = canvas.toDataURL('image/jpeg', quality);
-          // 캔버스 메모리 즉시 해제
           canvas.width = 1;
           canvas.height = 1;
           URL.revokeObjectURL(objectUrl);
@@ -437,26 +488,101 @@ window.Part5Module = (function () {
   }
 
   async function callAnalyzeApi(payload, state) {
-    const res = await fetch('/api/analyze-part5', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...payload,
-        defaultTestName: p5State.defaultTestName,
-        apiKey: state.settings.geminiApiKey || ''
-      })
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      const err = new Error(data.message || data.error || '분석 실패');
-      err.code = data.error;
+    const ctrl = new AbortController();
+    p5State.abortCtrl = ctrl;
+    // 클라이언트 24초 하드 타임아웃 (무한 대기 방지)
+    const timeoutId = setTimeout(() => {
+      ctrl.abort('TIMEOUT');
+    }, 24000);
+
+    try {
+      const res = await fetch('/api/analyze-part5', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...payload,
+          defaultTestName: p5State.defaultTestName,
+          apiKey: state.settings.geminiApiKey || ''
+        }),
+        signal: ctrl.signal
+      });
+
+      const rawText = await res.text();
+      let data = null;
+      try {
+        data = JSON.parse(rawText);
+      } catch (_) {
+        // Vercel 504/502 HTML/텍스트 응답을 안전하게 처리
+        if (res.status === 504 || /timeout|timed out/i.test(rawText)) {
+          throw new Error('서버 응답 시간(타임아웃)이 초과되었습니다. 다시 시도해 주세요.');
+        }
+        throw new Error(`서버 일시 오류 (HTTP ${res.status}). 잠시 후 다시 시도해 주세요.`);
+      }
+
+      if (!res.ok) {
+        const err = new Error(data.message || data.error || `분석 실패 (HTTP ${res.status})`);
+        err.code = data.error;
+        throw err;
+      }
+      return data;
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        if (ctrl.signal.reason === 'USER_CANCEL') {
+          const cancelErr = new Error('분석을 취소했습니다.');
+          cancelErr.code = 'CANCELLED';
+          throw cancelErr;
+        }
+        throw new Error('분석 시간이 24초를 초과해 자동 중단되었습니다. 다시 시도해 주세요.');
+      }
       throw err;
+    } finally {
+      clearTimeout(timeoutId);
+      if (p5State.abortCtrl === ctrl) p5State.abortCtrl = null;
     }
-    return data.items || [];
   }
 
   function renderAdd(ctx) {
     const { state, mainEl, showToast, switchTab } = ctx;
+
+    const runPhotoAnalysis = async (imagePayload) => {
+      const startedAt = Date.now();
+      p5State.analyzing = true;
+      p5State.errorMsg = '';
+      p5State.pendingItems = [];
+      p5State.elapsedSec = 0;
+      p5State.progressPct = 35;
+      p5State.progressLabel = '🤖 AI가 중앙 문제 인식 및 해설 작성 중...';
+      renderAdd(ctx);
+      startProgressTicker(startedAt);
+
+      try {
+        const data = await callAnalyzeApi(imagePayload, state);
+        const items = data.items || [];
+        setProgress(100, '✅ 분석 완료!');
+        p5State.lastElapsedSec = (Date.now() - startedAt) / 1000;
+        if (!items.length) {
+          p5State.errorMsg = '사진 가운데에서 완전한 Part 5 문제를 찾지 못했어요. 문제가 중앙에 오도록 다시 찍어 주세요.';
+          showToast('사진에서 문제를 찾지 못했어요');
+        } else {
+          p5State.pendingItems = items;
+          showToast(`✨ ${p5State.lastElapsedSec.toFixed(1)}초 만에 분석 완료!`);
+        }
+      } catch (err) {
+        if (err.code === 'CANCELLED') {
+          showToast('분석을 취소했어요');
+        } else if (err.code === 'NO_API_KEY') {
+          p5State.errorMsg = 'Gemini API 키가 필요합니다. 우측 상단 ⚙️ 설정에서 무료 키를 입력하거나 Vercel 환경변수(GEMINI_API_KEY)를 등록해 주세요.';
+          showToast('API 키 설정이 필요합니다');
+        } else {
+          p5State.errorMsg = err.message || '사진 분석 중 오류가 발생했어요';
+          showToast('분석 실패 — 아래 안내를 확인해 주세요');
+        }
+      } finally {
+        stopProgressTicker();
+        p5State.analyzing = false;
+        renderAdd(ctx);
+      }
+    };
 
     mainEl.innerHTML = `
       <div class="segmented full-width" style="display: grid; grid-template-columns: repeat(3, 1fr);">
@@ -469,7 +595,7 @@ window.Part5Module = (function () {
         <section class="card mt-12">
           <div style="font-size: 15px; font-weight: 800;">📸 틀린 문제 사진만 찍으면 끝!</div>
           <p class="helper-desc mt-8">
-            채점한 문제집에서 <strong>틀린 문제</strong>를 찍어 올리면 AI가 문제·보기(A~D)를 자동 인식하고, <strong>정답과 친절한 한국어 해설</strong>까지 한 번에 만들어 줍니다.
+            <strong>90도 회전 OK · 빨간펜 필기 자동 무시 · 중앙 1문제만 추출</strong>되도록 최적화되어 있습니다. 위·아래 문제가 살짝 걸려도 따로 자르지 말고 그대로 올리세요!
           </p>
 
           <label style="font-size: 12.5px; font-weight: 700; color: var(--text-sub); display: block; margin-bottom: 6px;">
@@ -495,21 +621,26 @@ window.Part5Module = (function () {
           ` : ''}
 
           ${p5State.analyzing ? `
-            <div class="p5-loading mt-12">
-              <div class="spinner"></div>
-              <div>AI가 문제를 읽고 정답·해설을 작성하는 중...</div>
+            <div class="p5-progress-box mt-12">
+              <div class="p5-progress-top">
+                <span id="p5ProgLabel">${escapeHtml(p5State.progressLabel || '분석 준비 중...')}</span>
+                <span class="p5-progress-nums"><strong id="p5ProgPct">${Math.round(p5State.progressPct)}%</strong> · <span id="p5ProgTime">${p5State.elapsedSec.toFixed(1)}초</span></span>
+              </div>
+              <div class="p5-progress-track">
+                <div id="p5ProgFill" class="p5-progress-fill" style="width: ${Math.round(p5State.progressPct)}%"></div>
+              </div>
+              <button id="btnP5Cancel" class="btn btn-outline btn-sm full-width mt-8" type="button">✕ 분석 취소</button>
             </div>
           ` : ''}
 
           ${p5State.errorMsg ? `
             <div class="p5-result-banner no mt-12" style="font-size: 13px; line-height: 1.5; word-break: break-word;">
               ⚠️ ${escapeHtml(p5State.errorMsg)}
+              ${p5State.lastImagePayload ? `
+                <button id="btnP5RetryPhoto" class="btn btn-danger btn-sm full-width mt-8" type="button">🔄 같은 사진 다시 분석하기</button>
+              ` : ''}
             </div>
           ` : ''}
-
-          <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 10px; line-height: 1.45;">
-            💡 일부 휴대폰에서 카메라 촬영 직후 브라우저가 초기화된다면, 기본 카메라로 먼저 찍은 뒤 <strong>앨범에서 선택</strong>을 이용해 주세요.
-          </div>
         </section>
       ` : p5State.addMode === 'text' ? `
         <section class="card mt-12">
@@ -522,6 +653,23 @@ window.Part5Module = (function () {
           <button id="btnP5AnalyzeText" class="btn btn-primary full-width" type="button" ${p5State.analyzing ? 'disabled' : ''}>
             ${p5State.analyzing ? '⏳ AI 분석 중...' : '✨ AI로 정답·해설 자동 생성'}
           </button>
+          ${p5State.analyzing ? `
+            <div class="p5-progress-box mt-12">
+              <div class="p5-progress-top">
+                <span id="p5ProgLabel">${escapeHtml(p5State.progressLabel || 'AI 분석 중...')}</span>
+                <span class="p5-progress-nums"><strong id="p5ProgPct">${Math.round(p5State.progressPct)}%</strong> · <span id="p5ProgTime">${p5State.elapsedSec.toFixed(1)}초</span></span>
+              </div>
+              <div class="p5-progress-track">
+                <div id="p5ProgFill" class="p5-progress-fill" style="width: ${Math.round(p5State.progressPct)}%"></div>
+              </div>
+              <button id="btnP5Cancel" class="btn btn-outline btn-sm full-width mt-8" type="button">✕ 분석 취소</button>
+            </div>
+          ` : ''}
+          ${p5State.errorMsg ? `
+            <div class="p5-result-banner no mt-12" style="font-size: 13px; line-height: 1.5; word-break: break-word;">
+              ⚠️ ${escapeHtml(p5State.errorMsg)}
+            </div>
+          ` : ''}
         </section>
       ` : `
         <section class="card mt-12">
@@ -551,7 +699,7 @@ window.Part5Module = (function () {
       ${p5State.pendingItems.length ? `
         <section class="card mt-12">
           <div style="font-size: 15px; font-weight: 800; color: var(--success);">
-            ✨ 인식 완료! (${p5State.pendingItems.length}문제)
+            ✨ 인식 완료! (${p5State.pendingItems.length}문제${p5State.lastElapsedSec ? ` · ${p5State.lastElapsedSec.toFixed(1)}초` : ''})
           </div>
           <div class="helper-desc mt-8">내용을 확인하고 저장 버튼을 누르면 바로 오답풀기에 추가됩니다.</div>
 
@@ -586,6 +734,7 @@ window.Part5Module = (function () {
     document.querySelectorAll('[data-add-mode]').forEach((btn) => {
       btn.addEventListener('click', () => {
         p5State.addMode = btn.dataset.addMode;
+        p5State.errorMsg = '';
         renderAdd(ctx);
       });
     });
@@ -597,6 +746,18 @@ window.Part5Module = (function () {
       });
     }
 
+    const cancelBtn = document.getElementById('btnP5Cancel');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', () => {
+        if (p5State.abortCtrl) p5State.abortCtrl.abort('USER_CANCEL');
+      });
+    }
+
+    const retryPhotoBtn = document.getElementById('btnP5RetryPhoto');
+    if (retryPhotoBtn && p5State.lastImagePayload) {
+      retryPhotoBtn.addEventListener('click', () => runPhotoAnalysis(p5State.lastImagePayload));
+    }
+
     // 사진 업로드 처리
     const handleFileSelect = async (e) => {
       const file = e.target.files && e.target.files[0];
@@ -605,30 +766,21 @@ window.Part5Module = (function () {
       p5State.analyzing = true;
       p5State.errorMsg = '';
       p5State.pendingItems = [];
+      p5State.elapsedSec = 0;
+      p5State.progressPct = 15;
+      p5State.progressLabel = '📷 사진 압축 및 최적화 중...';
       renderAdd(ctx);
 
       try {
         const { base64, dataUrl, mimeType } = await compressImageToBase64(file);
         p5State.previewImageUrl = dataUrl;
-        renderAdd(ctx);
-
-        const items = await callAnalyzeApi({ imageBase64: base64, mimeType }, state);
-        if (!items.length) {
-          p5State.errorMsg = '사진에서 Part 5 문제를 찾지 못했어요. 문제와 보기(A~D)가 잘 보이게 가까이 찍어 다시 시도해 주세요.';
-          showToast('사진에서 문제를 찾지 못했어요');
-        } else {
-          p5State.pendingItems = items;
-          showToast(`✨ ${items.length}개 문제를 자동으로 분석했어요!`);
-        }
+        p5State.lastImagePayload = { imageBase64: base64, mimeType };
+        await runPhotoAnalysis(p5State.lastImagePayload);
       } catch (err) {
-        if (err.code === 'NO_API_KEY') {
-          p5State.errorMsg = 'Gemini API 키가 필요합니다. 우측 상단 ⚙️ 설정에서 무료 키를 입력하거나 Vercel 환경변수(GEMINI_API_KEY)를 등록해 주세요.';
-        } else {
-          p5State.errorMsg = err.message || '사진 분석 중 오류가 발생했어요';
-        }
-        showToast('분석 실패 — 아래 오류 내용을 확인해 주세요');
-      } finally {
+        stopProgressTicker();
         p5State.analyzing = false;
+        p5State.errorMsg = err.message || '사진 처리 중 오류가 발생했어요';
+        showToast('사진 처리 실패');
         renderAdd(ctx);
       }
     };
@@ -647,21 +799,32 @@ window.Part5Module = (function () {
           showToast('문제 텍스트를 먼저 붙여넣어 주세요');
           return;
         }
+        const startedAt = Date.now();
         p5State.analyzing = true;
+        p5State.errorMsg = '';
         p5State.pendingItems = [];
+        p5State.elapsedSec = 0;
+        p5State.progressPct = 35;
+        p5State.progressLabel = '🤖 AI가 정답 및 해설 작성 중...';
         renderAdd(ctx);
+        startProgressTicker(startedAt);
 
         try {
-          const items = await callAnalyzeApi({ rawText }, state);
-          p5State.pendingItems = items;
-          showToast(`✨ ${items.length}개 문제 해설이 생성되었어요!`);
+          const data = await callAnalyzeApi({ rawText }, state);
+          setProgress(100, '✅ 분석 완료!');
+          p5State.lastElapsedSec = (Date.now() - startedAt) / 1000;
+          p5State.pendingItems = data.items || [];
+          showToast(`✨ ${p5State.lastElapsedSec.toFixed(1)}초 만에 해설 생성 완료!`);
         } catch (err) {
-          if (err.code === 'NO_API_KEY') {
-            alert('⚙️ 설정(톱니바퀴)에서 Gemini API 키를 입력하거나 Vercel 환경변수 GEMINI_API_KEY를 설정해 주세요.');
+          if (err.code === 'CANCELLED') {
+            showToast('분석을 취소했어요');
+          } else if (err.code === 'NO_API_KEY') {
+            p5State.errorMsg = '⚙️ 설정(톱니바퀴)에서 Gemini API 키를 입력하거나 Vercel 환경변수 GEMINI_API_KEY를 설정해 주세요.';
           } else {
-            showToast(err.message || '텍스트 분석 실패');
+            p5State.errorMsg = err.message || '텍스트 분석 실패';
           }
         } finally {
+          stopProgressTicker();
           p5State.analyzing = false;
           renderAdd(ctx);
         }
