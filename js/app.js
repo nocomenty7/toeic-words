@@ -398,12 +398,14 @@
     document.getElementById('btnStartStarred').addEventListener('click', () => startSmartSession('starred'));
   }
 
-  function startSmartSession(mode) {
+  function startSmartSession(mode, customPool) {
     window.TTS.unlock();
     const deck = getActiveDeck();
     let pool = [];
 
-    if (mode === 'wrong') {
+    if (Array.isArray(customPool) && customPool.length) {
+      pool = shuffleArray(customPool);
+    } else if (mode === 'wrong') {
       pool = shuffleArray(deck.words.filter((w) => {
         const p = window.Storage.getProgress(state, deck.id, w.id);
         return p.wrong > 0 && p.box < 3;
@@ -893,7 +895,7 @@
 
     const retryBtn = document.getElementById('btnRetryMissed');
     if (retryBtn) {
-      retryBtn.addEventListener('click', () => startSmartSession('wrong'));
+      retryBtn.addEventListener('click', () => startSmartSession('retry', missedWords));
     }
     document.getElementById('btnNextChunk').addEventListener('click', () => startSmartSession('smart'));
     document.getElementById('btnBackHome').addEventListener('click', () => {
