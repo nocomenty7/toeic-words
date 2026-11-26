@@ -404,16 +404,16 @@
     let pool = [];
 
     if (mode === 'wrong') {
-      pool = deck.words.filter((w) => {
+      pool = shuffleArray(deck.words.filter((w) => {
         const p = window.Storage.getProgress(state, deck.id, w.id);
         return p.wrong > 0 && p.box < 3;
-      });
+      }));
       if (!pool.length) {
         showToast('현재 틀린 단어가 없어요! 집중 암기를 시작해 보세요.');
         return;
       }
     } else if (mode === 'starred') {
-      pool = deck.words.filter((w) => window.Storage.getProgress(state, deck.id, w.id).starred);
+      pool = shuffleArray(deck.words.filter((w) => window.Storage.getProgress(state, deck.id, w.id).starred));
       if (!pool.length) {
         showToast('별표(⭐) 해둔 단어가 없어요. 단어장에서 별표를 눌러보세요.');
         return;
@@ -421,22 +421,22 @@
     } else if (mode === 'fulltest') {
       pool = shuffleArray(deck.words);
     } else {
-      // 'smart': 학습중/오답 우선 -> 미학습 -> 이미 다 외웠으면 전체 랜덤
+      // 'smart': 오답/복습중 우선 + 미학습 단어 무작위 추출 (입력 순서대로 나오지 않도록 전체 셔플)
       const chunkSize = Math.min(state.settings.chunkSize || 8, deck.words.length);
-      const learning = deck.words.filter((w) => {
+      const learning = shuffleArray(deck.words.filter((w) => {
         const p = window.Storage.getProgress(state, deck.id, w.id);
         return p.box === 1 || p.box === 2;
-      });
-      const unseen = deck.words.filter((w) => window.Storage.getProgress(state, deck.id, w.id).box === 0);
+      }));
+      const unseen = shuffleArray(deck.words.filter((w) => window.Storage.getProgress(state, deck.id, w.id).box === 0));
 
-      // 오답이 많은 순으로 정렬
+      // 오답이 많은 순으로 정렬 (동률은 랜덤 유지)
       learning.sort((a, b) => {
         const pa = window.Storage.getProgress(state, deck.id, a.id);
         const pb = window.Storage.getProgress(state, deck.id, b.id);
         return pb.wrong - pa.wrong;
       });
 
-      pool = [...learning, ...unseen].slice(0, chunkSize);
+      pool = shuffleArray([...learning, ...unseen].slice(0, chunkSize));
       if (!pool.length) {
         pool = shuffleArray(deck.words).slice(0, chunkSize);
         showToast('모두 암기완료! 복습 묶음으로 시작합니다.');
