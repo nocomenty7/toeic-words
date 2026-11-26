@@ -1,92 +1,16 @@
 /**
  * Vercel Serverless Function: /api/analyze-part5
- * 고속 토익 Part 5 사진/텍스트 분석 API
+ * 토익 Part 5 사진/텍스트 분석 API
  *
- * 속도 최적화:
- * 1) 불필요한 /v1beta/models 사전 조회를 생략하고 초고속 Flash-Lite/Flash 모델을 즉시 호출
- * 2) thinkingBudget: 0 적용으로 불필요한 추론 지연(8~12초)을 제거하여 2~4초 내 응답
- * 3) 모델별 9초 타임아웃 + 장애/혼잡 시 즉시 다음 모델로 우회
- * 4) 사용자 촬영 패턴 최적화 (90도 회전 허용, 빨간펜 필기 무시, 중앙 완전한 1문제만 추출)
+ * - /v1beta/models에서 현재 계정의 실제 활성 최신 Gemini Flash 모델을 자동 탐색·캐시
+ * - 저렴한 lite 모델보다 비전 정확도가 높은 정식 Flash 모델을 우선 선택
+ * - 90도 회전, 연필 밑줄/동그라미 및 빨간펜 필기 무시, 중앙 1문제만 추출
  */
 
+let cachedModels = null;
 let cachedWorkingModel = null;
-let cachedDiscovered = null;
 let cachedAt = 0;
 const CACHE_TTL_MS = 10 * 60 * 1000;
-
-const FAST_PATH_MODELS = [
-  'gemini-2.5-flash-lite',
-  'gemini-2.5-flash',
-  'gemini-flash-latest',
-  'gemini-2.0-flash'
-];
-
-function scoreModelName(fullName) {
-  const name = String(fullName || '').replace(/^models\//, '').toLowerCase();
-  if (!name.startsWith('gemini-')) return -1;
-  if (
-    name.includes('embedding') ||
-    name.includes('aqa') ||
-    name.includes('tts') ||
-    name.includes('audio') ||
-    name.includes('image') ||
-    name.includes('imagen') ||
-    name.includes('veo') ||
-    name.includes('robotics') ||
-    name.includes('thinking') ||
-    name.includes('learnlm') ||
-    name.includes('bisect')
-  ) {
-    return -1;
-  }
-
-  let score = 0;
-  const verMatch = name.match(/gemini-(\d+(?:\.\d+)?)/);
-  const ver = verMatch ? parseFloat(verMatch[1]) : 1.0;
-  score += ver * 100;
-
-  if (name.includes('flash-lite')) score += 60;
-  else if (name.includes('flash')) score += 50;
-  else if (name.includes('pro')) score += 10;
-
-  if (name.includes('preview') || name.includes('exp')) score -= 35;
-  if (name.endsWith('-latest')) score += 6;
-  return score;
-}
-
-async function discoverFallbackModels(apiKey) {
-  const now = Date.now();
-  if (cachedDiscovered && now - cachedAt < CACHE_TTL_MS) {
-    return cachedDiscovered;
-  }
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 3500);
-    const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
-      { signal: ctrl.signal }
-    );
-    clearTimeout(timer);
-    if (resp.ok) {
-      const json = await resp.json();
-      const models = (json.models || [])
-        .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
-        .map((m) => ({
-          id: String(m.name || '').replace(/^models\//, ''),
-          score: scoreModelName(m.name)
-        }))
-        .filter((m) => m.score > 0)
-        .sort((a, b) => b.score - a.score)
-        .map((m) => m.id);
-      cachedDiscovered = models.slice(0, 6);
-      cachedAt = now;
-      return cachedDiscovered;
-    }
-  } catch (_) {
-    // ignore
-  }
-  return [];
-}
 
 const RESPONSE_SCHEMA = {
   type: 'OBJECT',
@@ -125,12 +49,89 @@ const RESPONSE_SCHEMA = {
             required: ['A', 'B', 'C', 'D']
           }
         },
-        required: ['testName', 'number', 'category', 'question', 'choices', 'answer', 'translation', 'keyPoint', 'explanation', 'choiceNotes']
+        required: [
+          'testName', 'number', 'category', 'question', 'choices',
+          'answer', 'translation', 'keyPoint', 'explanation', 'choiceNotes'
+        ]
       }
     }
   },
   required: ['items']
 };
+
+function scoreModelName(fullName) {
+  const name = String(fullName || '').replace(/^models\//, '').toLowerCase();
+  if (!name.startsWith('gemini-')) return -1;
+  if (
+    name.includes('embedding') ||
+    name.includes('aqa') ||
+    name.includes('tts') ||
+    name.includes('audio') ||
+    name.includes('image') ||
+    name.includes('imagen') ||
+    name.includes('veo') ||
+    name.includes('robotics') ||
+    name.includes('thinking') ||
+    name.includes('learnlm') ||
+    name.includes('bisect')
+  ) {
+    return -1;
+  }
+
+  let score = 0;
+  const verMatch = name.match(/gemini-(\d+(?:\.\d+)?)/);
+  const ver = verMatch ? parseFloat(verMatch[1]) : 1.0;
+  score += ver * 100;
+
+  // 비전 인식 정확도가 높은 정식 flash를 lite보다 우선!
+  if (name.includes('flash') && !name.includes('lite')) score += 60;
+  else if (name.includes('flash-lite')) score += 40;
+  else if (name.includes('pro')) score += 20;
+
+  if (name.includes('preview') || name.includes('exp')) score -= 25;
+  if (name.endsWith('-latest')) score += 8;
+
+  return score;
+}
+
+async function getCandidateModels(apiKey) {
+  const now = Date.now();
+  if (cachedModels && cachedModels.length && now - cachedAt < CACHE_TTL_MS) {
+    return cachedModels;
+  }
+
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
+    const resp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
+      { signal: ctrl.signal }
+    );
+    clearTimeout(timer);
+    if (resp.ok) {
+      const json = await resp.json();
+      const models = (json.models || [])
+        .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+        .map((m) => ({
+          id: String(m.name || '').replace(/^models\//, ''),
+          score: scoreModelName(m.name)
+        }))
+        .filter((m) => m.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map((m) => m.id);
+
+      if (models.length) {
+        cachedModels = models.slice(0, 6);
+        cachedAt = now;
+        return cachedModels;
+      }
+    }
+  } catch (_) {
+    // ignore
+  }
+
+  return ['gemini-flash-latest', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
+}
 
 function parseJsonSafe(rawText) {
   const trimmed = String(rawText || '').trim();
@@ -138,18 +139,15 @@ function parseJsonSafe(rawText) {
   return JSON.parse(stripped);
 }
 
-async function callGeminiModel({ apiKey, modelId, parts, disableThinking, useSchema, timeoutMs }) {
+async function callGeminiModel({ apiKey, modelId, parts, useSchema, timeoutMs }) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const generationConfig = {
     responseMimeType: 'application/json',
-    temperature: 0.1,
+    temperature: 0.15,
     maxOutputTokens: 2048
   };
   if (useSchema) {
     generationConfig.responseSchema = RESPONSE_SCHEMA;
-  }
-  if (disableThinking && /2\.5|3/.test(modelId)) {
-    generationConfig.thinkingConfig = { thinkingBudget: 0 };
   }
 
   const ctrl = new AbortController();
@@ -203,32 +201,15 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    const systemPrompt = `당신은 토익(TOEIC) Part 5 전문 강사입니다. 아래 규칙을 엄격히 지켜 JSON만 출력하세요.
+    const systemPrompt = `당신은 친절하고 정확한 토익(TOEIC) Part 5 전문 강사입니다.
 
-[사진 판독 핵심 규칙]
+[사진 판독 규칙]
 1. 사진이 90도(또는 180도/270도) 회전되어 있을 수 있습니다. 글자 방향을 정확히 파악해 읽으세요.
-2. 인쇄된 검은색 활자(본 문제와 A~D 보기)만 읽으세요. 빨간색/파란색 펜으로 손글씨로 적은 빗금, 체크, 동그라미, 밑줄, 한글·영어 필기 해설은 모두 완전히 무시하세요.
-3. 사진의 정중앙(가운데)에 온전하게 찍힌 Part 5 문제 **딱 1문제**만 추출하세요. 위쪽이나 아래쪽에 잘려서 일부만 보이는 인접 문제는 무조건 무시하세요.
-4. 빈칸은 반드시 "___" 로 통일하고, testName이 안 보이면 "${defaultTestName || 'Part 5 오답'}"을 넣으세요.
-5. 해설은 핵심 단서 위주로 친절하고 간결하게(2~3문장), 보기별 정리는 한 줄씩 핵심만 적으세요.
-
-출력 JSON 스키마:
-{
-  "items": [
-    {
-      "testName": "Test 2",
-      "number": "115",
-      "category": "어휘 · 부사",
-      "question": "문장 ___ ...",
-      "choices": { "A": "", "B": "", "C": "", "D": "" },
-      "answer": "B",
-      "translation": "자연스러운 한국어 해석",
-      "keyPoint": "1줄 핵심 암기 포인트",
-      "explanation": "핵심 문법/문맥 단서를 짚는 친절한 해설 (2~3문장)",
-      "choiceNotes": { "A": "뜻/오답이유", "B": "뜻/정답이유", "C": "뜻/오답이유", "D": "뜻/오답이유" }
-    }
-  ]
-}`;
+2. 인쇄된 활자(본 문제 문장과 A~D 보기)만 읽으세요. 연필로 친 밑줄·동그라미·필기와 빨간펜/파란펜 채점 빗금·손글씨 해설은 모두 무시하세요.
+3. 사진의 정중앙(가운데)에 온전하게 찍힌 Part 5 문제 **딱 1문제**만 추출하세요. 위·아래에 잘려서 일부만 보이는 인접 문제는 무시하세요.
+4. 빈칸은 반드시 "___" 로 통일하고, testName이 사진에 없으면 "${defaultTestName || 'Part 5 오답'}"을 넣으세요.
+5. 정답(answer)은 "A", "B", "C", "D" 중 하나만 적고, 해설(explanation)은 핵심 문법/문맥 단서를 짚어 2~3문장으로 친절하게 작성하세요.
+6. choiceNotes에는 A~D 각 보기의 뜻과 정답/오답 이유를 한 줄씩 간결하게 적으세요.`;
 
     const parts = [{ text: systemPrompt }];
     if (imageBase64) {
@@ -238,103 +219,86 @@ module.exports = async function handler(req, res) {
           data: imageBase64
         }
       });
-      parts.push({ text: '사진 가운데의 완전한 1문제만 추출해 JSON으로 반환하세요.' });
+      parts.push({ text: '사진 정중앙의 완전한 Part 5 1문제만 추출해 지정된 JSON 스키마로 반환하세요.' });
     } else {
-      parts.push({ text: `아래 토익 Part 5 문제를 분석해 JSON으로 반환하세요.\n\n${rawText}` });
+      parts.push({ text: `아래 토익 Part 5 문제를 분석해 지정된 JSON 스키마로 반환하세요.\n\n${rawText}` });
     }
 
-    // 이전에 성공한 모델이 있으면 최우선 시도 + 빠른 기본 모델 목록
-    const initialQueue = [];
-    if (cachedWorkingModel) initialQueue.push(cachedWorkingModel);
-    FAST_PATH_MODELS.forEach((m) => {
-      if (!initialQueue.includes(m)) initialQueue.push(m);
+    const discovered = await getCandidateModels(key);
+    const queue = [];
+    if (cachedWorkingModel && discovered.includes(cachedWorkingModel)) {
+      queue.push(cachedWorkingModel);
+    }
+    discovered.forEach((m) => {
+      if (!queue.includes(m)) queue.push(m);
     });
 
-    const tried = new Set();
-    let lastError = 'AI 서버 응답 지연';
+    const errorLog = [];
     let lastStatus = 502;
 
-    const tryList = async (models) => {
-      for (const modelId of models) {
-        if (tried.has(modelId)) continue;
-        // 전체 서버 실행시간 23초 넘기기 전에 깔끔하게 종료
-        if (Date.now() - startedAt > 23000) {
-          lastStatus = 504;
-          lastError = '분석 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.';
-          return null;
-        }
-        tried.add(modelId);
+    for (const modelId of queue) {
+      const remainingMs = 26500 - (Date.now() - startedAt);
+      if (remainingMs < 3500) break;
 
-        let result = await callGeminiModel({
-          apiKey: key,
-          modelId,
-          parts,
-          disableThinking: true,
-          useSchema: true,
-          timeoutMs: 9500
-        });
+      let result = await callGeminiModel({
+        apiKey: key,
+        modelId,
+        parts,
+        useSchema: true,
+        timeoutMs: Math.min(18000, remainingMs)
+      });
 
-        // thinkingConfig 또는 responseSchema 미지원 모델이면 기본 옵션으로 즉시 재시도
-        if (!result.ok && result.status === 400 && /thinking|schema/i.test(result.data?.error?.message || '')) {
+      // responseSchema 미지원 모델이면 스키마 빼고 1회 재시도
+      if (!result.ok && result.status === 400 && /schema/i.test(result.data?.error?.message || '')) {
+        const rem2 = 26500 - (Date.now() - startedAt);
+        if (rem2 >= 3500) {
           result = await callGeminiModel({
             apiKey: key,
             modelId,
             parts,
-            disableThinking: false,
             useSchema: false,
-            timeoutMs: 9500
+            timeoutMs: Math.min(15000, rem2)
           });
         }
-
-        if (!result.ok) {
-          lastStatus = result.status;
-          lastError = result.data?.error?.message || `Gemini API 오류 (${result.status})`;
-          if (result.status === 401 || result.status === 403) {
-            return { fatal: true };
-          }
-          continue;
-        }
-
-        const rawJsonText = result.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!rawJsonText) {
-          lastError = 'AI 응답이 비어 있습니다. 사진을 더 선명하게 찍어 다시 시도해 주세요.';
-          continue;
-        }
-
-        try {
-          const parsed = parseJsonSafe(rawJsonText);
-          const items = Array.isArray(parsed.items) ? parsed.items : [];
-          cachedWorkingModel = modelId;
-          return { items, model: modelId };
-        } catch (_) {
-          // JSON 파싱 실패(문자열 잘림 등) 시 에러로 끝내지 않고 다음 모델로 자동 재시도
-          lastStatus = 502;
-          lastError = 'AI 응답 형식이 깨져 다음 모델로 재시도했지만 실패했습니다. 다시 시도해 주세요.';
-          continue;
-        }
       }
-      return null;
-    };
 
-    let outcome = await tryList(initialQueue);
+      if (!result.ok) {
+        lastStatus = result.status;
+        const msg = result.data?.error?.message || `HTTP ${result.status}`;
+        errorLog.push(`${modelId}: ${msg}`);
+        if (result.status === 401 || result.status === 403) break;
+        continue;
+      }
 
-    // 빠른 기본 모델이 모두 실패(예: 종료/혼잡)했고 시간이 남았으면 동적 목록 탐색 후 추가 시도
-    if (!outcome && Date.now() - startedAt < 18000) {
-      const discovered = await discoverFallbackModels(key);
-      outcome = await tryList(discovered);
-    }
+      const rawJsonText = result.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!rawJsonText) {
+        errorLog.push(`${modelId}: 빈 응답`);
+        continue;
+      }
 
-    if (outcome && !outcome.fatal) {
-      res.status(200).json({
-        items: outcome.items,
-        model: outcome.model,
-        elapsedMs: Date.now() - startedAt
-      });
-      return;
+      try {
+        const parsed = parseJsonSafe(rawJsonText);
+        const items = Array.isArray(parsed.items) ? parsed.items : [];
+        cachedWorkingModel = modelId;
+        res.status(200).json({
+          items,
+          model: modelId,
+          elapsedMs: Date.now() - startedAt
+        });
+        return;
+      } catch (parseErr) {
+        errorLog.push(`${modelId}: JSON 파싱 실패`);
+        continue;
+      }
     }
 
     cachedWorkingModel = null;
-    res.status(lastStatus).json({ error: 'GEMINI_ERROR', message: lastError });
+    cachedModels = null;
+    const summary = errorLog.length ? errorLog[errorLog.length - 1] : '응답 시간 초과';
+    res.status(lastStatus).json({
+      error: 'GEMINI_ERROR',
+      message: `AI 분석 실패 (${summary})`
+    });
   } catch (err) {
     res.status(500).json({
       error: 'ANALYZE_ERROR',

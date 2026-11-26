@@ -442,9 +442,9 @@ window.Part5Module = (function () {
     }, 150);
   }
 
-  function compressImageToBase64(file, maxSide = 960, quality = 0.72) {
+  function compressImageToBase64(file, maxSide = 1200, quality = 0.80) {
     return new Promise((resolve, reject) => {
-      // FileReader 대신 ObjectURL + 960px 압축으로 모바일 메모리 초과 및 업로드/인식 지연 최소화
+      // FileReader 대신 ObjectURL + 1200px 선명 압축으로 메모리 초과 방지 + 연필/빨간펜 밑줄 속 활자 선명도 유지
       const objectUrl = URL.createObjectURL(file);
       const img = new Image();
       img.onerror = () => {
@@ -490,10 +490,10 @@ window.Part5Module = (function () {
   async function callAnalyzeApi(payload, state) {
     const ctrl = new AbortController();
     p5State.abortCtrl = ctrl;
-    // 클라이언트 24초 하드 타임아웃 (무한 대기 방지)
+    // 클라이언트 30초 하드 타임아웃 (무한 대기 방지)
     const timeoutId = setTimeout(() => {
       ctrl.abort('TIMEOUT');
-    }, 24000);
+    }, 30000);
 
     try {
       const res = await fetch('/api/analyze-part5', {
