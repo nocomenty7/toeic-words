@@ -139,7 +139,7 @@ function parseJsonSafe(rawText) {
   return JSON.parse(stripped);
 }
 
-async function callGeminiModel({ apiKey, modelId, parts, useSchema, timeoutMs }) {
+async function callGeminiModel({ apiKey, modelId, parts, useSchema, thinkingLevel, timeoutMs }) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const generationConfig = {
     responseMimeType: 'application/json',
@@ -148,6 +148,9 @@ async function callGeminiModel({ apiKey, modelId, parts, useSchema, timeoutMs })
   };
   if (useSchema) {
     generationConfig.responseSchema = RESPONSE_SCHEMA;
+  }
+  if (thinkingLevel) {
+    generationConfig.thinkingConfig = { thinkingLevel };
   }
 
   const ctrl = new AbortController();
@@ -237,27 +240,46 @@ module.exports = async function handler(req, res) {
     let lastStatus = 502;
 
     for (const modelId of queue) {
-      const remainingMs = 26500 - (Date.now() - startedAt);
-      if (remainingMs < 3500) break;
+      const remainingMs = 48000 - (Date.now() - startedAt);
+      if (remainingMs < 4000) break;
+
+      const isGen3 = /gemini-3/i.test(modelId);
 
       let result = await callGeminiModel({
         apiKey: key,
         modelId,
         parts,
         useSchema: true,
-        timeoutMs: Math.min(18000, remainingMs)
+        thinkingLevel: isGen3 ? 'MINIMAL' : null,
+        timeoutMs: Math.min(20000, remainingMs)
       });
 
-      // responseSchema 미지원 모델이면 스키마 빼고 1회 재시도
-      if (!result.ok && result.status === 400 && /schema/i.test(result.data?.error?.message || '')) {
-        const rem2 = 26500 - (Date.now() - startedAt);
-        if (rem2 >= 3500) {
+      // thinkingLevel: MINIMAL 미지원 시 LOW로 즉시 재시도
+      if (!result.ok && result.status === 400 && isGen3 && /thinking/i.test(result.data?.error?.message || '')) {
+        const remLow = 48000 - (Date.now() - startedAt);
+        if (remLow >= 4000) {
+          result = await callGeminiModel({
+            apiKey: key,
+            modelId,
+            parts,
+            useSchema: true,
+            thinkingLevel: 'LOW',
+            timeoutMs: Math.min(20000, remLow)
+          });
+        }
+      }
+
+      // thinkingConfig 또는 responseSchema 미지원 모델이면 기본 옵션으로 1회 재시도
+      if (!result.ok && result.status === 400 && /thinking|schema/i.test(result.data?.error?.message || '')) {
+        const rem2 = 48000 - (Date.now() - startedAt);
+        if (rem2 >= 4000) {
           result = await callGeminiModel({
             apiKey: key,
             modelId,
             parts,
             useSchema: false,
-            timeoutMs: Math.min(15000, rem2)
+            thinkingLevel: null,
+            timeoutMs: Math.min(18000, rem2)
           });
         }
       }
