@@ -10,9 +10,13 @@ window.Part5Module = (function () {
   const savedTestNum = Math.max(1, parseInt(localStorage.getItem('p5_last_test_num') || '2', 10) || 2);
 
   const p5State = {
+    quizTest: 'all',          // 'all' | 'Test 1' | 'Test 2' ...
     quizFilter: 'unmastered', // unmastered | all | mastered
+    quizShuffled: false,
+    quizOrderIds: [],
     quizIndex: 0,
     selectedChoice: null,
+    listTest: 'all',          // 'all' | 'Test 1' | 'Test 2' ...
     listFilter: 'all',
     listQuery: '',
     expandedId: null,
@@ -44,20 +48,66 @@ window.Part5Module = (function () {
   function highlightBlank(sentence, filledWord) {
     const safe = escapeHtml(sentence);
     if (filledWord) {
-      return safe.replace(/_{2,}|—{2,}|\(\s*\)/g, `<span class="p5-blank filled">${escapeHtml(filledWord)}</span>`);
+      return safe.replace(/_{2,}|-{3,}|—{2,}|\(\s*\)/g, `<span class="p5-blank filled">${escapeHtml(filledWord)}</span>`);
     }
-    return safe.replace(/_{2,}|—{2,}|\(\s*\)/g, '<span class="p5-blank">________</span>');
+    return safe.replace(/_{2,}|-{3,}|—{2,}|\(\s*\)/g, '<span class="p5-blank">-------</span>');
   }
 
   function buildFullSentence(item) {
     const ansWord = (item.choices && item.choices[item.answer]) || '';
-    return String(item.question || '').replace(/_{2,}|—{2,}|\(\s*\)/g, ansWord);
+    return String(item.question || '').replace(/_{2,}|-{3,}|—{2,}|\(\s*\)/g, ansWord);
   }
 
   function statusLabel(status) {
     if (status === 'mastered') return '완전정복';
     if (status === 'review') return '복습중';
     return '미해결';
+  }
+
+  function extractNum(str) {
+    const m = String(str || '').match(/\d+/);
+    return m ? parseInt(m[0], 10) : Number.MAX_SAFE_INTEGER;
+  }
+
+  function getUniqueTests(all) {
+    const set = new Set();
+    all.forEach((q) => {
+      if (q.testName) set.add(q.testName);
+    });
+    return Array.from(set).sort((a, b) => {
+      const na = extractNum(a);
+      const nb = extractNum(b);
+      if (na !== nb) return na - nb;
+      return a.localeCompare(b);
+    });
+  }
+
+  function sortByTestAndNumber(items) {
+    return items.slice().sort((a, b) => {
+      const ta = extractNum(a.testName);
+      const tb = extractNum(b.testName);
+      if (ta !== tb) return ta - tb;
+      const cmpTest = String(a.testName || '').localeCompare(String(b.testName || ''));
+      if (cmpTest !== 0) return cmpTest;
+      const na = extractNum(a.number);
+      const nb = extractNum(b.number);
+      if (na !== nb) return na - nb;
+      return (a.createdAt || 0) - (b.createdAt || 0);
+    });
+  }
+
+  function shuffleArray(arr) {
+    const copy = arr.slice();
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+  }
+
+  function filterByTest(all, testFilter) {
+    if (!testFilter || testFilter === 'all') return all;
+    return all.filter((q) => q.testName === testFilter);
   }
 
   function filterItems(all, filter) {
@@ -68,16 +118,52 @@ window.Part5Module = (function () {
     return all;
   }
 
+  function getOrderedQuizItems(all) {
+    const byTest = filterByTest(all, p5State.quizTest);
+    const filtered = filterItems(byTest, p5State.quizFilter);
+    if (!p5State.quizShuffled) {
+      return sortByTestAndNumber(filtered);
+    }
+    const map = new Map(filtered.map((q) => [q.id, q]));
+    const ordered = [];
+    p5State.quizOrderIds.forEach((id) => {
+      if (map.has(id)) {
+        ordered.push(map.get(id));
+        map.delete(id);
+      }
+    });
+    // 새로 추가된 항목이 있으면 뒤에 랜덤 추가
+    if (map.size) {
+      shuffleArray(Array.from(map.values())).forEach((q) => ordered.push(q));
+    }
+    p5State.quizOrderIds = ordered.map((q) => q.id);
+    return ordered;
+  }
+
+  function reshuffleQuizItems(all) {
+    const byTest = filterByTest(all, p5State.quizTest);
+    const filtered = filterItems(byTest, p5State.quizFilter);
+    p5State.quizOrderIds = shuffleArray(filtered).map((q) => q.id);
+    p5State.quizIndex = 0;
+    p5State.selectedChoice = null;
+  }
+
   /* =========================================================
      1. 오답풀기 탭 (p5_quiz)
      ========================================================= */
   function renderQuiz(ctx) {
     const { state, mainEl, showToast, speakWord, switchTab } = ctx;
     const all = state.part5 || [];
-    const items = filterItems(all, p5State.quizFilter);
+    const tests = getUniqueTests(all);
+    if (p5State.quizTest !== 'all' && !tests.includes(p5State.quizTest)) {
+      p5State.quizTest = 'all';
+    }
 
-    const masteredCount = all.filter((q) => q.status === 'mastered').length;
-    const unmasteredCount = all.length - masteredCount;
+    const inTest = filterByTest(all, p5State.quizTest);
+    const items = getOrderedQuizItems(all);
+
+    const masteredCount = inTest.filter((q) => q.status === 'mastered').length;
+    const unmasteredCount = inTest.length - masteredCount;
 
     if (p5State.quizIndex >= items.length) {
       p5State.quizIndex = 0;
@@ -86,25 +172,44 @@ window.Part5Module = (function () {
 
     const filters = [
       { id: 'unmastered', label: `미정복 (${unmasteredCount})` },
-      { id: 'all', label: `전체 (${all.length})` },
+      { id: 'all', label: `전체 (${inTest.length})` },
       { id: 'mastered', label: `완전정복 (${masteredCount})` }
     ];
 
     mainEl.innerHTML = `
       <div class="chip-scroll">
-        ${filters.map((f) => `
-          <button class="filter-chip ${p5State.quizFilter === f.id ? 'active' : ''}" data-p5-qfilter="${f.id}" type="button">${f.label}</button>
-        `).join('')}
+        <button class="filter-chip ${p5State.quizTest === 'all' ? 'active' : ''}" data-p5-qtest="all" type="button">
+          전체 Test (${all.length})
+        </button>
+        ${tests.map((t) => {
+          const cnt = all.filter((q) => q.testName === t).length;
+          return `
+            <button class="filter-chip ${p5State.quizTest === t ? 'active' : ''}" data-p5-qtest="${escapeHtml(t)}" type="button">
+              ${escapeHtml(t)} (${cnt})
+            </button>
+          `;
+        }).join('')}
+      </div>
+
+      <div class="p5-toolbar-row">
+        <div class="chip-scroll" style="flex: 1;">
+          ${filters.map((f) => `
+            <button class="filter-chip ${p5State.quizFilter === f.id ? 'active' : ''}" data-p5-qfilter="${f.id}" type="button">${f.label}</button>
+          `).join('')}
+        </div>
+        <button class="p5-shuffle-btn ${p5State.quizShuffled ? 'active' : ''}" id="btnP5Shuffle" type="button" title="문제 순서 섞기/순서대로">
+          ${p5State.quizShuffled ? '🔀 섞임' : '🔀 섞기'}
+        </button>
       </div>
 
       ${!item ? `
         <div class="card empty-state mt-12">
-          <div style="font-size: 40px; margin-bottom: 8px;">${all.length ? '🏆' : '📝'}</div>
+          <div style="font-size: 40px; margin-bottom: 8px;">${inTest.length ? '🏆' : '📝'}</div>
           <div style="font-weight: 800; font-size: 16px;">
-            ${all.length ? '모든 오답 문제를 정복했어요!' : '아직 등록된 오답 문제가 없어요'}
+            ${inTest.length ? '선택한 범위의 오답을 모두 정복했어요!' : '아직 등록된 오답 문제가 없어요'}
           </div>
           <div style="font-size: 13px; margin-top: 6px;">
-            ${all.length ? '위에서 "전체"를 눌러 다시 복습하거나 새 오답을 촬영해 보세요.' : '아래 "사진등록" 탭에서 틀린 문제를 찍어 바로 등록해 보세요!'}
+            ${inTest.length ? '위에서 "전체"를 눌러 다시 복습하거나 다른 Test를 선택해 보세요.' : '아래 "사진등록" 탭에서 틀린 문제를 찍어 바로 등록해 보세요!'}
           </div>
           <button class="btn btn-primary mt-16" id="btnP5GoAdd" type="button">📸 오답 사진 찍어 등록하기</button>
         </div>
@@ -197,14 +302,42 @@ window.Part5Module = (function () {
       `}
     `;
 
+    document.querySelectorAll('[data-p5-qtest]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        p5State.quizTest = btn.dataset.p5Qtest;
+        p5State.quizIndex = 0;
+        p5State.selectedChoice = null;
+        if (p5State.quizShuffled) reshuffleQuizItems(all);
+        renderQuiz(ctx);
+      });
+    });
+
     document.querySelectorAll('[data-p5-qfilter]').forEach((btn) => {
       btn.addEventListener('click', () => {
         p5State.quizFilter = btn.dataset.p5Qfilter;
         p5State.quizIndex = 0;
         p5State.selectedChoice = null;
+        if (p5State.quizShuffled) reshuffleQuizItems(all);
         renderQuiz(ctx);
       });
     });
+
+    const shuffleBtn = document.getElementById('btnP5Shuffle');
+    if (shuffleBtn) {
+      shuffleBtn.addEventListener('click', () => {
+        p5State.quizShuffled = !p5State.quizShuffled;
+        if (p5State.quizShuffled) {
+          reshuffleQuizItems(all);
+          showToast('🔀 문제를 무작위로 섞었어요!');
+        } else {
+          p5State.quizOrderIds = [];
+          p5State.quizIndex = 0;
+          p5State.selectedChoice = null;
+          showToast('📋 Test · 번호 순서대로 정렬했어요');
+        }
+        renderQuiz(ctx);
+      });
+    }
 
     const goAddBtn = document.getElementById('btnP5GoAdd');
     if (goAddBtn) {
@@ -257,9 +390,15 @@ window.Part5Module = (function () {
      2. 오답목록 탭 (p5_list)
      ========================================================= */
   function renderList(ctx) {
-    const { state, mainEl, showToast, speakWord } = ctx;
+    const { state, mainEl, showToast, speakWord, switchTab } = ctx;
     const all = state.part5 || [];
-    let items = filterItems(all, p5State.listFilter);
+    const tests = getUniqueTests(all);
+    if (p5State.listTest !== 'all' && !tests.includes(p5State.listTest)) {
+      p5State.listTest = 'all';
+    }
+
+    const inTest = filterByTest(all, p5State.listTest);
+    let items = sortByTestAndNumber(filterItems(inTest, p5State.listFilter));
 
     if (p5State.listQuery.trim()) {
       const q = p5State.listQuery.trim().toLowerCase();
@@ -273,20 +412,45 @@ window.Part5Module = (function () {
     }
 
     const filters = [
-      { id: 'all', label: `전체 (${all.length})` },
-      { id: 'wrong', label: `미해결 (${all.filter((q) => q.status === 'wrong').length})` },
-      { id: 'review', label: `복습중 (${all.filter((q) => q.status === 'review').length})` },
-      { id: 'mastered', label: `완전정복 (${all.filter((q) => q.status === 'mastered').length})` }
+      { id: 'all', label: `전체 (${inTest.length})` },
+      { id: 'wrong', label: `미해결 (${inTest.filter((q) => q.status === 'wrong').length})` },
+      { id: 'review', label: `복습중 (${inTest.filter((q) => q.status === 'review').length})` },
+      { id: 'mastered', label: `완전정복 (${inTest.filter((q) => q.status === 'mastered').length})` }
     ];
 
     mainEl.innerHTML = `
       <input id="p5SearchInput" class="search-input" type="search" placeholder="🔍 문제, 보기, Test 번호, 유형 검색..." value="${escapeHtml(p5State.listQuery)}" />
 
       <div class="chip-scroll">
+        <button class="filter-chip ${p5State.listTest === 'all' ? 'active' : ''}" data-p5-ltest="all" type="button">
+          전체 Test (${all.length})
+        </button>
+        ${tests.map((t) => {
+          const cnt = all.filter((q) => q.testName === t).length;
+          return `
+            <button class="filter-chip ${p5State.listTest === t ? 'active' : ''}" data-p5-ltest="${escapeHtml(t)}" type="button">
+              ${escapeHtml(t)} (${cnt})
+            </button>
+          `;
+        }).join('')}
+      </div>
+
+      <div class="chip-scroll mt-8">
         ${filters.map((f) => `
           <button class="filter-chip ${p5State.listFilter === f.id ? 'active' : ''}" data-p5-lfilter="${f.id}" type="button">${f.label}</button>
         `).join('')}
       </div>
+
+      ${inTest.length ? `
+        <div class="btn-row mt-8">
+          <button class="btn btn-secondary btn-sm" id="btnP5ListStudyOrder" type="button">
+            📝 ${p5State.listTest === 'all' ? '전체' : escapeHtml(p5State.listTest)} 순서대로 풀기
+          </button>
+          <button class="btn btn-primary btn-sm" id="btnP5ListStudyShuffle" type="button">
+            🔀 ${p5State.listTest === 'all' ? '전체' : escapeHtml(p5State.listTest)} 섞어서 풀기
+          </button>
+        </div>
+      ` : ''}
 
       <div class="word-list mt-12">
         ${!items.length ? `
@@ -354,12 +518,35 @@ window.Part5Module = (function () {
       }
     });
 
+    document.querySelectorAll('[data-p5-ltest]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        p5State.listTest = btn.dataset.p5Ltest;
+        renderList(ctx);
+      });
+    });
+
     document.querySelectorAll('[data-p5-lfilter]').forEach((btn) => {
       btn.addEventListener('click', () => {
         p5State.listFilter = btn.dataset.p5Lfilter;
         renderList(ctx);
       });
     });
+
+    const launchStudy = (shuffled) => {
+      p5State.quizTest = p5State.listTest;
+      p5State.quizFilter = p5State.listFilter === 'mastered' ? 'mastered' : p5State.listFilter === 'all' ? 'all' : 'unmastered';
+      p5State.quizShuffled = shuffled;
+      p5State.quizIndex = 0;
+      p5State.selectedChoice = null;
+      if (shuffled) reshuffleQuizItems(all);
+      else p5State.quizOrderIds = [];
+      switchTab('p5_quiz');
+    };
+
+    const btnOrder = document.getElementById('btnP5ListStudyOrder');
+    if (btnOrder) btnOrder.addEventListener('click', () => launchStudy(false));
+    const btnShuf = document.getElementById('btnP5ListStudyShuffle');
+    if (btnShuf) btnShuf.addEventListener('click', () => launchStudy(true));
 
     document.querySelectorAll('[data-p5-toggle]').forEach((el) => {
       el.addEventListener('click', (e) => {

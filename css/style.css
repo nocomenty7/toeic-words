@@ -1530,19 +1530,45 @@ button {
 
 .p5-blank {
   display: inline-block;
-  padding: 0 6px;
-  margin: 0 2px;
-  border-bottom: 2.5px solid var(--primary);
+  padding: 0 3px;
+  margin: 0 1px;
   color: var(--primary);
   font-weight: 800;
+  letter-spacing: 0.5px;
 }
 
 .p5-blank.filled {
   background: var(--success-soft);
-  border-bottom-color: var(--success);
   color: var(--success);
   border-radius: 6px;
   padding: 1px 8px;
+  letter-spacing: 0;
+}
+
+.p5-toolbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 7px;
+}
+
+.p5-shuffle-btn {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text-sub);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.p5-shuffle-btn.active {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 .p5-explain-wrap {
