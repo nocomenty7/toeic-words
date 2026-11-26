@@ -88,19 +88,66 @@ async function discoverFallbackModels(apiKey) {
   return [];
 }
 
+const RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    items: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          testName: { type: 'STRING' },
+          number: { type: 'STRING' },
+          category: { type: 'STRING' },
+          question: { type: 'STRING' },
+          choices: {
+            type: 'OBJECT',
+            properties: {
+              A: { type: 'STRING' },
+              B: { type: 'STRING' },
+              C: { type: 'STRING' },
+              D: { type: 'STRING' }
+            },
+            required: ['A', 'B', 'C', 'D']
+          },
+          answer: { type: 'STRING' },
+          translation: { type: 'STRING' },
+          keyPoint: { type: 'STRING' },
+          explanation: { type: 'STRING' },
+          choiceNotes: {
+            type: 'OBJECT',
+            properties: {
+              A: { type: 'STRING' },
+              B: { type: 'STRING' },
+              C: { type: 'STRING' },
+              D: { type: 'STRING' }
+            },
+            required: ['A', 'B', 'C', 'D']
+          }
+        },
+        required: ['testName', 'number', 'category', 'question', 'choices', 'answer', 'translation', 'keyPoint', 'explanation', 'choiceNotes']
+      }
+    }
+  },
+  required: ['items']
+};
+
 function parseJsonSafe(rawText) {
   const trimmed = String(rawText || '').trim();
   const stripped = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   return JSON.parse(stripped);
 }
 
-async function callGeminiModel({ apiKey, modelId, parts, disableThinking, timeoutMs }) {
+async function callGeminiModel({ apiKey, modelId, parts, disableThinking, useSchema, timeoutMs }) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const generationConfig = {
     responseMimeType: 'application/json',
     temperature: 0.1,
-    maxOutputTokens: 900
+    maxOutputTokens: 2048
   };
+  if (useSchema) {
+    generationConfig.responseSchema = RESPONSE_SCHEMA;
+  }
   if (disableThinking && /2\.5|3/.test(modelId)) {
     generationConfig.thinkingConfig = { thinkingBudget: 0 };
   }
@@ -223,16 +270,18 @@ module.exports = async function handler(req, res) {
           modelId,
           parts,
           disableThinking: true,
+          useSchema: true,
           timeoutMs: 9500
         });
 
-        // thinkingConfig 미지원 모델이면 옵션 빼고 즉시 재시도
-        if (!result.ok && result.status === 400 && /thinking/i.test(result.data?.error?.message || '')) {
+        // thinkingConfig 또는 responseSchema 미지원 모델이면 기본 옵션으로 즉시 재시도
+        if (!result.ok && result.status === 400 && /thinking|schema/i.test(result.data?.error?.message || '')) {
           result = await callGeminiModel({
             apiKey: key,
             modelId,
             parts,
             disableThinking: false,
+            useSchema: false,
             timeoutMs: 9500
           });
         }
@@ -252,10 +301,17 @@ module.exports = async function handler(req, res) {
           continue;
         }
 
-        const parsed = parseJsonSafe(rawJsonText);
-        const items = Array.isArray(parsed.items) ? parsed.items : [];
-        cachedWorkingModel = modelId;
-        return { items, model: modelId };
+        try {
+          const parsed = parseJsonSafe(rawJsonText);
+          const items = Array.isArray(parsed.items) ? parsed.items : [];
+          cachedWorkingModel = modelId;
+          return { items, model: modelId };
+        } catch (_) {
+          // JSON 파싱 실패(문자열 잘림 등) 시 에러로 끝내지 않고 다음 모델로 자동 재시도
+          lastStatus = 502;
+          lastError = 'AI 응답 형식이 깨져 다음 모델로 재시도했지만 실패했습니다. 다시 시도해 주세요.';
+          continue;
+        }
       }
       return null;
     };
