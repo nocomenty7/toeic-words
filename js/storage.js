@@ -32,10 +32,18 @@ window.Storage = (function () {
     };
   }
 
+  function getExtraBuiltInDecks() {
+    return Array.isArray(window.EXTRA_DECKS) ? window.EXTRA_DECKS : [];
+  }
+
   function buildInitialState() {
+    const extra = getExtraBuiltInDecks().map((d) => JSON.parse(JSON.stringify(d)));
+    const decks = [JSON.parse(JSON.stringify(window.DEFAULT_DECK)), ...extra];
+    const latestDeck = extra.length ? extra[extra.length - 1] : decks[0];
     return {
-      activeDeckId: window.DEFAULT_DECK.id,
-      decks: [JSON.parse(JSON.stringify(window.DEFAULT_DECK))],
+      activeDeckId: latestDeck.id,
+      decks,
+      mergedBuiltInDeckIds: decks.map((d) => d.id),
       progress: {}, // { [deckId]: { [wordId]: Progress } }
       part5: getDefaultPart5(),
       settings: { ...DEFAULT_SETTINGS },
@@ -75,6 +83,26 @@ window.Storage = (function () {
       if (!Array.isArray(parsed.part5)) {
         parsed.part5 = getDefaultPart5();
       }
+
+      // 새로 추가된 내장 단어장(EXTRA_DECKS) 자동 병합 (기존 암기 기록 100% 유지)
+      if (!Array.isArray(parsed.mergedBuiltInDeckIds)) {
+        parsed.mergedBuiltInDeckIds = parsed.decks.map((d) => d.id);
+      }
+      let newlyMergedId = null;
+      getExtraBuiltInDecks().forEach((deck) => {
+        const alreadyMerged = parsed.mergedBuiltInDeckIds.includes(deck.id);
+        const alreadyExists = parsed.decks.some((d) => d.id === deck.id);
+        if (!alreadyMerged && !alreadyExists) {
+          parsed.decks.push(JSON.parse(JSON.stringify(deck)));
+          parsed.mergedBuiltInDeckIds.push(deck.id);
+          newlyMergedId = deck.id;
+        }
+      });
+      if (newlyMergedId) {
+        parsed.activeDeckId = newlyMergedId;
+        save(parsed);
+      }
+
       parsed.stats = parsed.stats || {
         totalReviews: 0,
         sessionsCompleted: 0,
